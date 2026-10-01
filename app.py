@@ -7,8 +7,9 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from core import PRINCIPAL, DEFAULT_PLAN, balances, month_paid, payoff, excel
+from core import PRINCIPAL, DEFAULT_PLAN, MAX_AMOUNT, amount_words, balances, month_paid, payoff, excel
 from storage import GoogleStore
+from hana_ui import render_hana
 
 st.set_page_config(page_title='우리집 상환장부', page_icon='◔', layout='wide')
 st.markdown('''<style>
@@ -82,10 +83,10 @@ def connect():
     return GoogleStore(st.secrets)
 
 st.title('우리집 상환장부')
-st.caption('친척에게 빌린 2억 원 · 엄마 1억 / 본인 1억 · 실제 송금 계좌는 본인 계좌')
+st.caption('가족 상환장부 · 하나은행 대출을 탭별로 관리합니다.')
 try:
     store = connect()
-    records, plan, revision = store.load()
+    records, plan, hana_records, revision = store.load_details()
 except Exception as error:
     st.error('Google Sheets 연결에 실패했습니다. 아래 점검 결과를 확인해주세요.')
     error_type = type(error).__name__
@@ -157,24 +158,6 @@ def gauge(label, left, original, color):
         st.plotly_chart(fig, width="stretch", config={'displayModeBar': False})
         st.caption(f'갚은 원금 {original-left:,}원 / 빌린 원금 {original:,}원')
 
-for col, label, left, original, color in zip(st.columns(3), ['전체', '엄마', '본인'], [sum(remaining.values()), remaining['mother'], remaining['me']], [PRINCIPAL*2, PRINCIPAL, PRINCIPAL], ['#2563eb', '#0d9488', '#8b5cf6']):
-    with col:
-        gauge(label, left, original, color)
-
-st.subheader('이번 달 상환 계획')
-for col, p, label in zip(st.columns(2), ['mother', 'me'], ['엄마', '본인']):
-    with col:
-        target = min(plan[p], remaining[p] + paid[p])
-        due = min(remaining[p], max(target - paid[p], 0))
-        d = payoff(remaining[p], plan[p], paid[p], today)
-        with st.container(border=True):
-            st.markdown(f'**{label} · 월 {plan[p]:,}원**')
-            st.progress(min(paid[p]/target, 1.0) if target else 1.0)
-            st.write(f'이번 달 {paid[p]:,}원 상환 · 더 갚을 금액 **{due:,}원**')
-            st.caption('완납 완료' if not remaining[p] else f'예상 완납월: {d:%Y년 %m월}' if d else '예상 완납월: 월 목표 설정 필요')
-ends = [payoff(remaining[p], plan[p], paid[p], today) for p in remaining]
-st.caption(('전체 예상 완납월: ' + max(ends).strftime('%Y년 %m월')) if all(ends) else '전체 예상 완납월: 월 목표 설정 필요')
-st.caption('이번 달 남은 목표액을 이번 달에 갚고, 다음 달부터 매월 목표액을 갚는 기준입니다. 이자는 원금을 줄이지 않습니다.')
 
 
 def mutate(kind, data):
@@ -189,25 +172,59 @@ def mutate(kind, data):
     st.session_state['notice'] = 'Google Sheets에 저장했습니다.'
     st.rerun()
 
-entry, history, settings = st.tabs(['상환 기록', '내역 · 엑셀', '계획 · 선상환'])
+def amount_input(container, label, value, step, key, maximum=MAX_AMOUNT):
+    amount = container.number_input(label, min_value=0, max_value=maximum, value=value, step=step, key=key)
+    container.caption(f'{amount:,}원 · {amount_words(amount)}')
+    return amount
+
+entry, history, settings, hana_tab = st.tabs(['상환 기록', '내역 · 엑셀', '계획 · 선상환', '하나은행 대출'])
 with entry:
-    st.caption('한 번 송금한 전체 금액을 입력한 뒤 엄마·본인 원금과 이자로 나눠주세요.')
+    for col, label, left, original, color in zip(st.columns(3), ['전체', '엄마', '본인'], [sum(remaining.values()), remaining['mother'], remaining['me']], [PRINCIPAL*2, PRINCIPAL, PRINCIPAL], ['#2563eb', '#0d9488', '#8b5cf6']):
+        with col:
+            gauge(label, left, original, color)
+
+    st.subheader('이번 달 상환 계획')
+    for col, p, label in zip(st.columns(2), ['mother', 'me'], ['엄마', '본인']):
+        with col:
+            target = min(plan[p], remaining[p] + paid[p])
+            due = min(remaining[p], max(target - paid[p], 0))
+            d = payoff(remaining[p], plan[p], paid[p], today)
+            with st.container(border=True):
+                st.markdown(f'**{label} · 월 {plan[p]:,}원**')
+                st.progress(min(paid[p]/target, 1.0) if target else 1.0)
+                st.write(f'이번 달 {paid[p]:,}원 상환 · 더 갚을 금액 **{due:,}원**')
+                st.caption('완납 완료' if not remaining[p] else f'예상 완납월: {d:%Y년 %m월}' if d else '예상 완납월: 월 목표 설정 필요')
+    ends = [payoff(remaining[p], plan[p], paid[p], today) for p in remaining]
+    st.caption(('전체 예상 완납월: ' + max(ends).strftime('%Y년 %m월')) if all(ends) else '전체 예상 완납월: 월 목표 설정 필요')
+    st.caption('이번 달 남은 목표액을 이번 달에 갚고, 다음 달부터 매월 목표액을 갚는 기준입니다. 이자는 원금을 줄이지 않습니다.')
+
+    st.caption('엄마·본인이 갚은 원금과 이자를 입력하세요. 송금액은 자동으로 더합니다. 금액 입력 후 Enter를 누르거나 다른 칸을 클릭하면 한글 금액이 표시됩니다.')
     quick = st.toggle('이번 달 정기 상환액 자동 채우기')
     defaults = {p: min(remaining[p], max(plan[p]-paid[p],0)) if quick else 0 for p in remaining}
     def record_form(prefix, initial=None):
         initial = initial or {}
-        with st.form(prefix):
+        with st.container(border=True):
             a,b = st.columns(2)
-            when = a.date_input('상환일', value=date.fromisoformat(initial['date']) if initial else today, max_value=today)
-            bank = b.text_input('송금 은행', value=initial.get('bank',''), placeholder='예: 국민은행')
-            sender = st.text_input('실제 송금자명', value=initial.get('sender', st.secrets.get('sender_name','')), placeholder='본인 이름')
+            when = a.date_input('상환일', value=date.fromisoformat(initial['date']) if initial else today, max_value=today, key=prefix+'_date')
+            bank = b.text_input('송금 은행', value=initial.get('bank',''), placeholder='예: 국민은행', key=prefix+'_bank')
+            sender = st.text_input('실제 송금자명', value=initial.get('sender', st.secrets.get('sender_name','')), placeholder='본인 이름', key=prefix+'_sender')
             a,b,c = st.columns(3)
-            mother = a.number_input('엄마 원금 상환액', min_value=0, value=initial.get('mother', defaults['mother']), step=100_000)
-            me = b.number_input('본인 원금 상환액', min_value=0, value=initial.get('me', defaults['me']), step=100_000)
-            interest = c.number_input('이자 지급액', min_value=0, value=initial.get('interest',0), step=10_000)
-            total = st.number_input('실제 총 송금액', min_value=0, value=initial.get('total',sum(defaults.values())), step=100_000)
-            memo = st.text_area('메모', value=initial.get('memo',''), placeholder='예: 정기상환 / 본인 선상환')
-            submitted = st.form_submit_button('확인한 금액 저장', type='primary')
+            mother = amount_input(a, '엄마 원금 상환액', initial.get('mother', defaults['mother']), 100_000, prefix+'_mother')
+            me = amount_input(b, '본인 원금 상환액', initial.get('me', defaults['me']), 100_000, prefix+'_me')
+            interest = amount_input(c, '이자 지급액', initial.get('interest',0), 10_000, prefix+'_interest')
+            st.caption('이자 지급액: 빌린 돈의 사용료로 따로 지급한 금액입니다. 이자가 없으면 0원으로 두세요. 이자는 남은 원금에서 빠지지 않습니다.')
+            combined = mother + me + interest
+            st.metric('저장할 송금액 · 자동 합산', f'{combined:,}원')
+            st.caption(amount_words(combined) if combined <= MAX_AMOUNT else '금액이 너무 큽니다.')
+            st.caption(f'엄마 {mother:,}원 + 본인 {me:,}원 + 이자 {interest:,}원')
+            total = combined
+            if st.toggle('은행에서 보낸 금액을 따로 입력해 비교', key=prefix+'_compare'):
+                total = amount_input(st, '실제 총 송금액', min(initial.get('total', combined), MAX_AMOUNT), 100_000, prefix+'_total')
+                if total != combined:
+                    st.warning(f'입력한 송금액 {total:,}원과 합산 금액 {combined:,}원이 다릅니다. 차이 {abs(total-combined):,}원을 확인해주세요.')
+            memo = st.text_area('메모', value=initial.get('memo',''), placeholder='예: 정기상환 / 본인 선상환', key=prefix+'_memo')
+            st.caption('은행에서 실제로 보낸 금액과 위 금액이 같은지 확인한 뒤 저장하세요.')
+            submitted = st.button('확인한 금액 저장', type='primary', key=prefix+'_save')
         if submitted:
             record = dict(id=initial.get('id', str(uuid.uuid4())), date=when.isoformat(), bank=bank.strip(), sender=sender.strip(), total=int(total), mother=int(mother), me=int(me), interest=int(interest), memo=memo)
             if not initial and any(all(r[k] == record[k] for k in ('date','bank','sender','total','mother','me','interest','memo')) for r in records):
@@ -226,7 +243,7 @@ with history:
         st.caption(f'조회 합계: 원금 {sum(r["mother"]+r["me"] for r in selected):,}원 / 이자 {sum(r["interest"] for r in selected):,}원')
     else:
         st.info('아직 기록된 상환 내역이 없습니다.')
-    st.download_button('전체 장부 엑셀 다운로드', excel(records, plan, today), file_name=f'상환장부_{today.isoformat()}.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    st.download_button('가족 장부 엑셀 다운로드', excel(records, plan, today), file_name=f'상환장부_{today.isoformat()}.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     if records:
         with st.expander('내역 수정 · 삭제'):
             ids = [r['id'] for r in records]
@@ -244,16 +261,16 @@ with history:
             points.append({'날짜':r['date'], '전체 잔액':left})
         st.line_chart(pd.DataFrame(points).groupby('날짜').last())
 with settings:
-    with st.form('plan'):
+    with st.container(border=True):
         st.subheader('월 상환 목표')
         a,b = st.columns(2)
-        mother = a.number_input('엄마 월 목표', min_value=0, value=int(plan['mother']), step=100_000)
-        me = b.number_input('본인 월 목표', min_value=0, value=int(plan['me']), step=100_000)
-        if st.form_submit_button('목표 저장'):
+        mother = amount_input(a, '엄마 월 목표', int(plan['mother']), 100_000, 'plan_mother')
+        me = amount_input(b, '본인 월 목표', int(plan['me']), 100_000, 'plan_me')
+        if st.button('목표 저장'):
             mutate('plan', {'mother':int(mother), 'me':int(me)})
     with st.expander('선상환하면 얼마나 빨라질까?'):
         person = st.selectbox('선상환 대상', ['me','mother'], format_func=lambda p:'본인' if p=='me' else '엄마')
-        extra = st.number_input('추가 상환액', min_value=0, max_value=remaining[person], value=min(20_000_000,remaining[person]), step=100_000)
+        extra = amount_input(st, '추가 상환액', min(20_000_000,remaining[person]), 100_000, 'extra_'+person, maximum=remaining[person])
         before = payoff(remaining[person], plan[person], paid[person], today)
         after = payoff(remaining[person]-extra, plan[person], paid[person]+extra, today)
         if before and after:
@@ -263,3 +280,6 @@ with settings:
         else:
             st.info('월 상환 목표를 설정하면 비교할 수 있습니다.')
         st.caption('지금 추가 상환하는 가정입니다. 계산만 하며 실제 장부에는 저장하지 않습니다.')
+
+with hana_tab:
+    render_hana(hana_records, today, mutate, gauge, amount_input)

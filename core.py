@@ -12,6 +12,26 @@ FIELDS = ['id', 'date', 'bank', 'sender', 'total', 'mother', 'me', 'interest', '
 DEFAULT_PLAN = {'mother': 4_000_000, 'me': 1_000_000}
 MAX_AMOUNT = 2**53 - 1
 
+def amount_words(amount):
+    if type(amount) is not int or amount < 0 or amount > MAX_AMOUNT:
+        raise ValueError('금액은 0 이상의 정수여야 합니다.')
+    if amount == 0:
+        return '영 원'
+    digits = ['', '일', '이', '삼', '사', '오', '육', '칠', '팔', '구']
+    groups = []
+    for large in ('', '만', '억', '조'):
+        amount, group = divmod(amount, 10000)
+        text = ''
+        for divisor, unit in ((1000, '천'), (100, '백'), (10, '십'), (1, '')):
+            digit, group = divmod(group, divisor)
+            if digit:
+                text += ('' if digit == 1 and unit else digits[digit]) + unit
+        if text:
+            if text == '일' and large == '만':
+                text = ''
+            groups.append(text + large)
+    return ' '.join(reversed(groups)) + ' 원'
+
 def validate_plan(plan):
     if not isinstance(plan, dict) or set(plan) != {'mother', 'me'} or any(type(v) is not int or not 0 <= v <= MAX_AMOUNT for v in plan.values()):
         raise ValueError('월 상환 목표는 0 이상의 정수로 입력해주세요.')
@@ -44,6 +64,9 @@ def fold(events):
         elif kind == 'plan':
             validate_plan(data)
             plan = data
+        elif kind in ('hana_save', 'hana_delete'):
+            # 별도 대출의 이벤트는 가족 장부의 잔액과 계획에 반영하지 않는다.
+            pass
         else:
             raise ValueError('알 수 없는 저장 이벤트입니다.')
     result = sorted(records.values(), key=lambda r: (r['date'], r['id']))

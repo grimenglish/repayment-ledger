@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 import gspread
 from google.oauth2.service_account import Credentials
 from core import fold, digest, validate, validate_plan
+from hana import fold_hana, validate_hana
 
 HEADER = ['event_id', 'timestamp', 'type', 'payload']
 
@@ -65,24 +66,29 @@ class GoogleStore:
             raise SheetFormatError('ledger_events_v1 탭의 형식이 다릅니다. 연결을 중단했습니다.')
 
     def load(self):
+        records, plan, hana_records, revision = self.load_details()
+        return records, plan, revision
+
+    def load_details(self):
         rows = clean_rows(self.sheet.get_all_values())
         if not rows or rows[0] != HEADER:
             raise SheetFormatError('저장 탭의 제목 행을 확인해주세요.')
         events = [r for r in rows[1:] if any(r)]
         try:
             records, plan = fold(events)
+            hana_records = fold_hana(events)
             today = datetime.now(ZoneInfo('Asia/Seoul')).date()
-            for record in records:
+            for record in records + hana_records:
                 if record['date'] > today.isoformat():
                     raise ValueError('미래 날짜의 실제 상환 내역이 있습니다.')
         except (ValueError, KeyError, TypeError) as error:
             raise LedgerDataError('저장된 상환 내역 형식을 확인해주세요.') from error
-        return records, plan, digest(events)
+        return records, plan, hana_records, digest(events)
 
     def mutate(self, kind, data, expected, today):
         # 같은 앱 프로세스의 여러 브라우저에서 발생하는 동시 저장을 직렬화
         with self.lock:
-            records, plan, revision = self.load()
+            records, plan, hana_records, revision = self.load_details()
             if revision != expected:
                 raise ValueError('다른 화면에서 내역이 변경되었습니다. 새로고침 후 다시 저장해주세요.')
             if kind == 'save':
@@ -92,6 +98,11 @@ class GoogleStore:
                     raise ValueError('이미 삭제된 내역입니다.')
             elif kind == 'plan':
                 validate_plan(data)
+            elif kind == 'hana_save':
+                validate_hana(data, hana_records, today)
+            elif kind == 'hana_delete':
+                if data['id'] not in {r['id'] for r in hana_records}:
+                    raise ValueError('이미 삭제된 하나은행 내역입니다.')
             else:
                 raise ValueError('지원하지 않는 작업입니다.')
             eid = str(uuid.uuid4())
