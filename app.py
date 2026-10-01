@@ -86,9 +86,38 @@ st.caption('친척에게 빌린 2억 원 · 엄마 1억 / 본인 1억 · 실제 
 try:
     store = connect()
     records, plan, revision = store.load()
-except Exception:
-    st.error('Google Sheets에 연결할 수 없습니다. Secrets와 서비스 계정의 시트 공유 권한을 확인해주세요.')
-    st.info('연결 전에는 실제 내역을 입력하거나 저장할 수 없습니다. README의 연결 순서를 확인해주세요.')
+except Exception as error:
+    st.error('Google Sheets 연결에 실패했습니다. 아래 점검 결과를 확인해주세요.')
+    error_type = type(error).__name__
+    status = getattr(getattr(error, 'response', None), 'status_code', None)
+    st.code('오류 유형: ' + error_type + (f' / HTTP {status}' if isinstance(status, int) else ''))
+    hints = {
+        'SpreadsheetNotFound': '시트 ID 또는 서비스 계정의 시트 공유 권한을 확인해주세요.',
+        'PermissionError': '시트 편집자 권한과 Google Sheets API 사용 설정을 확인해주세요.',
+        'MalformedError': '서비스 계정의 필수 설정 또는 private_key 형식을 확인해주세요.',
+        'RefreshError': '서비스 계정 키의 유효성을 확인해주세요. 삭제된 키나 다른 계정의 키일 수 있습니다.',
+        'ValueError': 'private_key 형식 또는 ledger_events_v1 탭의 제목 행을 확인해주세요.',
+        'KeyError': 'Secrets의 spreadsheet_id와 gcp_service_account 설정을 확인해주세요.',
+    }
+    st.info(hints.get(error_type, 'Google 연결 설정과 API 응답 상태를 확인해주세요.'))
+    account = dict(st.secrets.get('gcp_service_account', {}))
+    key = str(account.get('private_key', ''))
+    checks = {
+        '시트 ID 입력': bool(st.secrets.get('spreadsheet_id')),
+        '서비스 계정 설정 있음': bool(account),
+        'project_id 입력': bool(account.get('project_id')),
+        'client_email 입력': bool(account.get('client_email')),
+        'token_uri 입력': bool(account.get('token_uri')),
+        '키 시작 문구 정상': key.startswith('-----BEGIN PRIVATE KEY-----'),
+        '키 끝 문구 정상': key.rstrip().endswith('-----END PRIVATE KEY-----'),
+        '키 줄바꿈 정상': chr(10) in key and chr(92)+'n' not in key,
+    }
+    for label, ok in checks.items():
+        st.write(('✅ ' if ok else '❌ ') + label)
+    st.caption('이 화면에는 키와 로그인 보안 비밀을 표시하지 않습니다.')
+    if st.button('연결 다시 시도'):
+        connect.clear()
+        st.rerun()
     st.stop()
 
 today = datetime.now(ZoneInfo('Asia/Seoul')).date()
