@@ -4,6 +4,7 @@ import pandas as pd
 import streamlit as st
 from core import amount_words, MAX_AMOUNT
 from hana import HANA_PRINCIPAL, HANA_SHARES, hana_balance, hana_balances, hana_unallocated, monthly_interest, repayment_fee, hana_excel
+from easy_ui import choose_person, repeat_button
 
 def render_hana(records, today, mutate, gauge, amount_input):
     left = hana_balance(records)
@@ -51,32 +52,37 @@ def render_hana(records, today, mutate, gauge, amount_input):
         initial=initial or {}
         available={person:remaining[person]+initial.get(person,0) for person in HANA_SHARES}
         total_available=left+initial.get('principal',0)
+        if not initial:
+            repeat_button(prefix,records,today,available,bank=True)
         with st.container(border=True):
+            person=choose_person(prefix,initial)
             when=st.date_input('하나은행 상환일',value=date.fromisoformat(initial['date']) if initial else today,max_value=today,key=prefix+'_date')
             if initial and 'mother' not in initial:
                 st.info(f'이전 기록: 원금 {initial["principal"]:,}원, 납부 이자 {initial["interest"]:,}원. 엄마·본인 몫으로 나눠 입력해주세요.')
-            a,b=st.columns(2)
-            mother=amount_input(a,'엄마 하나은행 원금 상환액',initial.get('mother',0),100_000,prefix+'_mother',maximum=min(available['mother'],total_available))
-            me=amount_input(b,'본인 하나은행 원금 상환액',initial.get('me',0),100_000,prefix+'_me',maximum=min(available['me'],total_available))
+            a,b=st.columns(2) if person=='함께' else (st,st)
+            mother=amount_input(a,'엄마 하나은행 원금 상환액',initial.get('mother',0),100_000,prefix+'_mother',maximum=min(available['mother'],total_available),quick=True) if person!='본인만' else 0
+            me=amount_input(b,'본인 하나은행 원금 상환액',initial.get('me',0),100_000,prefix+'_me',maximum=min(available['me'],total_available),quick=True) if person!='엄마만' else 0
             principal=mother+me
             if principal>total_available:
                 st.warning('엄마·본인 상환액의 합계가 전체 잔여 원금보다 큽니다.')
             estimate=preview(mother,me,available,total_before=total_available,show_split=not unallocated) if principal<=total_available else repayment_fee(principal)
-            actual=st.toggle('은행에서 확인한 실제 상환수수료 입력',value=initial.get('fee_basis')=='actual',key=prefix+'_actual')
-            if actual:
-                fee=amount_input(st,'실제 상환수수료',initial.get('fee',estimate),1_000,prefix+'_fee')
-            else:
-                fee=estimate
-                st.caption('실제 수수료를 입력하지 않으면 위 금액을 ‘예상 수수료’로 구분해 기록합니다.')
-            a,b=st.columns(2)
-            mother_interest=amount_input(a,'엄마 이자 · 실제 납부액',initial.get('mother_interest',0),10_000,prefix+'_mother_interest')
-            me_interest=amount_input(b,'본인 이자 · 실제 납부액',initial.get('me_interest',0),10_000,prefix+'_me_interest')
+            with st.expander('추가 입력 · 납부 이자, 실제 수수료, 메모',expanded=bool(initial and 'mother' not in initial)):
+                actual=st.toggle('은행에서 확인한 실제 상환수수료 입력',value=initial.get('fee_basis')=='actual',key=prefix+'_actual')
+                if actual:
+                    fee=amount_input(st,'실제 상환수수료',initial.get('fee',estimate),1_000,prefix+'_fee')
+                else:
+                    fee=estimate
+                    st.caption('실제 수수료를 입력하지 않으면 위 금액을 ‘예상 수수료’로 구분해 기록합니다.')
+                a,b=st.columns(2) if person=='함께' else (st,st)
+                mother_interest=amount_input(a,'엄마 이자 · 실제 납부액',initial.get('mother_interest',0),10_000,prefix+'_mother_interest') if person!='본인만' else 0
+                me_interest=amount_input(b,'본인 이자 · 실제 납부액',initial.get('me_interest',0),10_000,prefix+'_me_interest') if person!='엄마만' else 0
+                memo=st.text_area('하나은행 메모',value=initial.get('memo',''),key=prefix+'_memo')
             interest=mother_interest+me_interest
             st.caption('이번에 은행에 실제로 낸 이자만 입력하세요. 예상 월 이자는 자동 계산되므로 여기에 넣지 않아도 됩니다. 이자와 수수료는 원금에서 차감되지 않습니다.')
             total=principal+interest+fee
             st.metric('상환 원금 + 납부 이자 + 수수료'+(' · 실제 입력' if actual else ' · 수수료는 예상'),f'{total:,}원')
             st.caption(amount_words(total) if total <= MAX_AMOUNT else '금액이 너무 큽니다.')
-            memo=st.text_area('하나은행 메모',value=initial.get('memo',''),key=prefix+'_memo')
+            st.markdown(f'**저장 전 확인: 엄마 {mother:,}원 · 본인 {me:,}원 원금 상환**')
             st.caption('실제로 상환한 내역만 저장하세요. 앞으로 갚을 금액은 ‘상환 미리 계산’에서 확인할 수 있습니다.')
             if st.button('하나은행 상환 저장',type='primary',key=prefix+'_save'):
                 data=dict(id=initial.get('id',str(uuid.uuid4())),date=when.isoformat(),principal=int(principal),mother=int(mother),me=int(me),interest=int(interest),mother_interest=int(mother_interest),me_interest=int(me_interest),fee=int(fee),fee_basis='actual' if actual else 'estimate',memo=memo)

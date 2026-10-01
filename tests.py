@@ -31,6 +31,105 @@ class Sheet:
 def fake_store():
     s=GoogleStore.__new__(GoogleStore); s.sheet=Sheet(); s.lock=threading.RLock(); return s
 class Tests(unittest.TestCase):
+    def test_undo_new_and_edited_records(self):
+        for kind,first,edited in [('save',record(),record(me=2_000_000,total=6_000_000)),('hana_save',bank_record(),bank_record(principal=5_000_000,fee=24_500))]:
+            s=fake_store()
+            s.mutate(kind,first,s.load()[2],TODAY)
+            s.undo_save(kind,first,None,s.load()[2],TODAY)
+            self.assertEqual(s.load_details()[0 if kind=='save' else 2],[])
+            s.mutate(kind,first,s.load()[2],TODAY)
+            s.mutate(kind,edited,s.load()[2],TODAY)
+            s.undo_save(kind,edited,first,s.load()[2],TODAY)
+            self.assertEqual(s.load_details()[0 if kind=='save' else 2],[first])
+
+    def test_undo_blocks_later_changes(self):
+        s=fake_store(); first=record(); second=record(me=2_000_000,total=6_000_000)
+        s.mutate('save',first,s.load()[2],TODAY)
+        revision=s.load()[2]
+        s.mutate('save',second,revision,TODAY)
+        with self.assertRaises(ValueError): s.undo_save('save',first,None,revision,TODAY)
+        with self.assertRaises(ValueError): s.undo_save('save',first,None,s.load()[2],TODAY)
+        self.assertEqual(s.load()[0],[second])
+
+    def test_undo_restores_legacy_bank_record(self):
+        s=fake_store(); legacy=bank_record()
+        for key in ('mother','me','mother_interest','me_interest'): legacy.pop(key)
+        s.sheet.rows.append(['old','time','hana_save',json.dumps(legacy)])
+        allocated=bank_record(mother=2_000_000)
+        s.mutate('hana_save',allocated,s.load()[2],TODAY)
+        s.undo_save('hana_save',allocated,legacy,s.load()[2],TODAY)
+        self.assertEqual(s.load_details()[2],[legacy])
+
+    def test_easy_family_repeat_person_buttons_and_undo(self):
+        import streamlit as st
+        st.cache_resource.clear(); s=fake_store()
+        previous=record(mother=0,me=1_000_000,total=1_000_000,date='2026-09-30')
+        s.mutate('save',previous,s.load()[2],TODAY)
+        with patch('storage.GoogleStore',return_value=s):
+            app=AppTest.from_file('app.py')
+            app.secrets['login']={'salt':'test','password_hash':'test'}
+            app.session_state['authenticated_until']=time.time()+1000
+            app.run()
+            self.assertTrue(any(m.label=='내 남은 대출' and m.value=='149,000,000원' for m in app.metric))
+            app.button(key='new_manual_repeat').click().run()
+            self.assertFalse(app.exception)
+            self.assertEqual(app.radio(key='new_manual_person').value,'본인만')
+            self.assertNotIn('new_manual_mother',[widget.key for widget in app.number_input])
+            self.assertEqual(app.number_input(key='new_manual_me').value,1_000_000)
+            self.assertEqual(app.date_input(key='new_manual_date').value,TODAY)
+            app.button(key='new_manual_me_plus100k').click().run()
+            self.assertEqual(app.number_input(key='new_manual_me').value,1_100_000)
+            app.button(key='new_manual_me_plus1m').click().run()
+            self.assertEqual(app.number_input(key='new_manual_me').value,2_100_000)
+            app.button(key='new_manual_me_reset').click().run()
+            self.assertEqual(app.number_input(key='new_manual_me').value,0)
+            app.button(key='new_manual_repeat').click().run()
+            app.button(key='new_manual_save').click().run()
+            self.assertFalse(app.exception)
+            self.assertEqual(len(s.load()[0]),2)
+            app.button(key='undo_last_save').click().run()
+            self.assertFalse(app.exception)
+            self.assertEqual(s.load()[0],[previous])
+            self.assertNotIn('undo_last_save',[button.key for button in app.button])
+
+    def test_easy_hana_repeat_and_undo(self):
+        import streamlit as st
+        st.cache_resource.clear(); s=fake_store()
+        previous=bank_record(date='2026-09-30',mother=10_000_000,me=0)
+        s.mutate('hana_save',previous,s.load()[2],TODAY)
+        with patch('storage.GoogleStore',return_value=s):
+            app=AppTest.from_file('app.py')
+            app.secrets['login']={'salt':'test','password_hash':'test'}
+            app.session_state['authenticated_until']=time.time()+1000
+            app.run()
+            app.button(key='hana_new_repeat').click().run()
+            self.assertFalse(app.exception)
+            self.assertEqual(app.radio(key='hana_new_person').value,'엄마만')
+            self.assertNotIn('hana_new_me',[widget.key for widget in app.number_input])
+            self.assertEqual(app.number_input(key='hana_new_mother').value,10_000_000)
+            app.button(key='hana_new_mother_plus1m').click().run()
+            self.assertEqual(app.number_input(key='hana_new_mother').value,10_000_000)
+            app.button(key='hana_new_save').click().run()
+            self.assertFalse(app.exception)
+            self.assertEqual(hana_balances(s.load_details()[2])['mother'],0)
+            app.button(key='undo_last_save').click().run()
+            self.assertFalse(app.exception)
+            self.assertEqual(s.load_details()[2],[previous])
+
+    def test_repeat_limits_remaining_principal(self):
+        import streamlit as st
+        st.cache_resource.clear(); s=fake_store()
+        s.mutate('hana_save',bank_record(mother=15_000_000,me=0,principal=15_000_000,fee=73_500),s.load()[2],TODAY)
+        with patch('storage.GoogleStore',return_value=s):
+            app=AppTest.from_file('app.py')
+            app.secrets['login']={'salt':'test','password_hash':'test'}
+            app.session_state['authenticated_until']=time.time()+1000
+            app.run()
+            app.button(key='hana_new_repeat').click().run()
+            self.assertFalse(app.exception)
+            self.assertEqual(app.number_input(key='hana_new_mother').value,5_000_000)
+            self.assertTrue(any('남은 원금에 맞춰' in info.value for info in app.info))
+
     def test_hana_mother_and_me_separate(self):
         s=fake_store()
         self.assertEqual(hana_balances([]),HANA_SHARES)
@@ -227,7 +326,7 @@ class Tests(unittest.TestCase):
             app.secrets['auth']={'google':{}}
             app.run()
             self.assertFalse(app.exception)
-            self.assertEqual(len(app.tabs),7)
+            self.assertEqual(len(app.tabs),8)
             connection.assert_called_once()
 
     def test_paid_dashboard_with_zero_plan(self):
@@ -416,7 +515,7 @@ class Tests(unittest.TestCase):
             app.run()
             self.assertFalse(app.exception)
             self.assertEqual(len(app.get('plotly_chart')),6)
-            self.assertEqual(len(app.tabs),7)
+            self.assertEqual(len(app.tabs),8)
             for b in app.button:
                 if b.label=='확인한 금액 저장': b.click(); break
             app.run()

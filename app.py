@@ -10,6 +10,8 @@ import streamlit as st
 from core import PRINCIPAL, DEFAULT_PLAN, MAX_AMOUNT, amount_words, balances, month_paid, payoff, excel
 from storage import GoogleStore
 from hana_ui import render_hana
+from hana import hana_balance, hana_balances, hana_unallocated, monthly_interest
+from easy_ui import choose_person, repeat_button, amount_buttons, last_record
 
 st.set_page_config(page_title='우리집 상환장부', page_icon='◔', layout='wide')
 st.markdown('''<style>
@@ -161,6 +163,8 @@ def gauge(label, left, original, color):
 
 
 def mutate(kind, data):
+    target=records if kind=='save' else hana_records
+    previous=next((r for r in target if r['id']==data.get('id')),None) if kind in ('save','hana_save') else None
     try:
         store.mutate(kind, data, revision, today)
     except ValueError as e:
@@ -170,14 +174,53 @@ def mutate(kind, data):
         st.error('저장 결과를 확인할 수 없습니다. 새로고침하여 내역을 확인한 뒤 다시 시도해주세요.')
         return
     st.session_state['notice'] = 'Google Sheets에 저장했습니다.'
+    if kind in ('save','hana_save'):
+        st.session_state['last_save']={'kind':kind,'saved':dict(data),'previous':dict(previous) if previous else None}
     st.rerun()
 
-def amount_input(container, label, value, step, key, maximum=MAX_AMOUNT):
+def amount_input(container, label, value, step, key, maximum=MAX_AMOUNT, quick=False):
     amount = container.number_input(label, min_value=0, max_value=maximum, value=value, step=step, key=key)
     container.caption(f'{amount:,}원 · {amount_words(amount)}')
+    if quick:
+        amount_buttons(container,key,maximum)
     return amount
 
-entry, history, settings, hana_tab = st.tabs(['상환 기록', '내역 · 엑셀', '계획 · 선상환', '하나은행 대출'])
+if pending:=st.session_state.get('last_save'):
+    source='가족 대출' if pending['kind']=='save' else '하나은행'
+    amount=pending['saved'].get('total',pending['saved'].get('principal',0))
+    st.caption(f'최근 저장: {source} · {pending["saved"]["date"]} · {amount:,}원')
+    if st.button('방금 저장 취소',key='undo_last_save'):
+        try:
+            store.undo_save(pending['kind'],pending['saved'],pending['previous'],revision,today)
+        except ValueError as error:
+            st.error(str(error))
+        except Exception:
+            st.error('취소 결과를 확인할 수 없습니다. 새로고침 후 내역을 확인해주세요.')
+        else:
+            st.session_state.pop('last_save',None)
+            st.session_state['notice']='방금 저장을 취소했습니다.'
+            st.rerun()
+
+overview, entry, history, settings, hana_tab = st.tabs(['전체 현황', '가족 대출', '가족 내역 · 엑셀', '가족 계획 · 선상환', '하나은행 대출'])
+with overview:
+    st.subheader('우리집 대출 한눈에 보기')
+    a,b,c=st.columns(3)
+    bank_remaining=hana_balances(hana_records)
+    if not hana_unallocated(hana_records):
+        a.metric('엄마 남은 대출',f'{remaining["mother"]+bank_remaining["mother"]:,}원')
+        a.caption(f'가족 {remaining["mother"]:,}원 + 하나은행 {bank_remaining["mother"]:,}원')
+        b.metric('내 남은 대출',f'{remaining["me"]+bank_remaining["me"]:,}원')
+        b.caption(f'가족 {remaining["me"]:,}원 + 하나은행 {bank_remaining["me"]:,}원')
+        c.metric('하나은행 예상 월 이자',f'약 {monthly_interest(hana_balance(hana_records)):,}원')
+        c.caption(f'엄마 약 {monthly_interest(bank_remaining["mother"]):,}원 / 본인 약 {monthly_interest(bank_remaining["me"]):,}원')
+    else:
+        a.metric('가족 대출 잔액',f'{sum(remaining.values()):,}원')
+        b.metric('하나은행 잔액',f'{hana_balance(hana_records):,}원')
+        c.metric('하나은행 예상 월 이자',f'약 {monthly_interest(hana_balance(hana_records)):,}원')
+        st.info('이전 하나은행 내역의 배분을 확인하면 엄마·본인 총 잔액이 표시됩니다.')
+    st.metric('전체 남은 원금',f'{sum(remaining.values())+hana_balance(hana_records):,}원')
+    st.caption('상환하려면 위에서 가족 대출 또는 하나은행 대출을 선택하세요. 원금을 갚은 사람에 따라 각자의 잔액이 줄어듭니다.')
+    st.markdown('**간편 입력 순서**: 대출 선택 → 엄마·본인 선택 → 금액 입력 → 확인 후 저장')
 with entry:
     for col, label, left, original, color in zip(st.columns(3), ['전체', '엄마', '본인'], [sum(remaining.values()), remaining['mother'], remaining['me']], [PRINCIPAL*2, PRINCIPAL, PRINCIPAL], ['#2563eb', '#0d9488', '#8b5cf6']):
         with col:
@@ -203,16 +246,24 @@ with entry:
     defaults = {p: min(remaining[p], max(plan[p]-paid[p],0)) if quick else 0 for p in remaining}
     def record_form(prefix, initial=None):
         initial = initial or {}
+        latest=last_record(records) or {}
+        available=balances([r for r in records if r['id']!=initial.get('id')])
+        if not initial:
+            repeat_button(prefix,records,today,available)
         with st.container(border=True):
-            a,b = st.columns(2)
-            when = a.date_input('상환일', value=date.fromisoformat(initial['date']) if initial else today, max_value=today, key=prefix+'_date')
-            bank = b.text_input('송금 은행', value=initial.get('bank',''), placeholder='예: 국민은행', key=prefix+'_bank')
-            sender = st.text_input('실제 송금자명', value=initial.get('sender', st.secrets.get('sender_name','')), placeholder='본인 이름', key=prefix+'_sender')
-            a,b,c = st.columns(3)
-            mother = amount_input(a, '엄마 원금 상환액', initial.get('mother', defaults['mother']), 100_000, prefix+'_mother')
-            me = amount_input(b, '본인 원금 상환액', initial.get('me', defaults['me']), 100_000, prefix+'_me')
-            interest = amount_input(c, '이자 지급액', initial.get('interest',0), 10_000, prefix+'_interest')
-            st.caption('이자 지급액: 빌린 돈의 사용료로 따로 지급한 금액입니다. 이자가 없으면 0원으로 두세요. 이자는 남은 원금에서 빠지지 않습니다.')
+            person=choose_person(prefix,initial)
+            when = st.date_input('상환일', value=date.fromisoformat(initial['date']) if initial else today, max_value=today, key=prefix+'_date')
+            a,b=st.columns(2) if person=='함께' else (st,st)
+            mother = amount_input(a, '엄마 원금 상환액', min(initial.get('mother', defaults['mother']),available['mother']), 100_000, prefix+'_mother',maximum=available['mother'],quick=True) if person!='본인만' else 0
+            me = amount_input(b, '본인 원금 상환액', min(initial.get('me', defaults['me']),available['me']), 100_000, prefix+'_me',maximum=available['me'],quick=True) if person!='엄마만' else 0
+            bank_default=initial.get('bank',latest.get('bank',st.secrets.get('bank_name','신한은행')))
+            sender_default=initial.get('sender',latest.get('sender',st.secrets.get('sender_name','')))
+            with st.expander('추가 입력 · 은행, 송금자, 이자, 메모',expanded=not sender_default):
+                bank = st.text_input('송금 은행', value=bank_default, placeholder='예: 국민은행', key=prefix+'_bank')
+                sender = st.text_input('실제 송금자명', value=sender_default, placeholder='본인 이름', key=prefix+'_sender')
+                interest = amount_input(st, '이자 지급액', initial.get('interest',0), 10_000, prefix+'_interest')
+                st.caption('이자가 없으면 0원입니다. 이자는 남은 원금에서 빠지지 않습니다.')
+                memo = st.text_area('메모', value=initial.get('memo',''), placeholder='예: 정기상환 / 본인 선상환', key=prefix+'_memo')
             combined = mother + me + interest
             st.metric('저장할 송금액 · 자동 합산', f'{combined:,}원')
             st.caption(amount_words(combined) if combined <= MAX_AMOUNT else '금액이 너무 큽니다.')
@@ -222,7 +273,11 @@ with entry:
                 total = amount_input(st, '실제 총 송금액', min(initial.get('total', combined), MAX_AMOUNT), 100_000, prefix+'_total')
                 if total != combined:
                     st.warning(f'입력한 송금액 {total:,}원과 합산 금액 {combined:,}원이 다릅니다. 차이 {abs(total-combined):,}원을 확인해주세요.')
-            memo = st.text_area('메모', value=initial.get('memo',''), placeholder='예: 정기상환 / 본인 선상환', key=prefix+'_memo')
+            with st.container(border=True):
+                st.markdown('**저장 전 확인**')
+                st.write(f'엄마 {mother:,}원 · 본인 {me:,}원 상환')
+                st.write(f'엄마 잔액 {available["mother"]:,}원 → **{available["mother"]-mother:,}원**')
+                st.write(f'본인 잔액 {available["me"]:,}원 → **{available["me"]-me:,}원**')
             st.caption('은행에서 실제로 보낸 금액과 위 금액이 같은지 확인한 뒤 저장하세요.')
             submitted = st.button('확인한 금액 저장', type='primary', key=prefix+'_save')
         if submitted:

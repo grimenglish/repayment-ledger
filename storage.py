@@ -105,11 +105,36 @@ class GoogleStore:
                     raise ValueError('이미 삭제된 하나은행 내역입니다.')
             else:
                 raise ValueError('지원하지 않는 작업입니다.')
-            eid = str(uuid.uuid4())
-            event = [eid, datetime.now(timezone.utc).isoformat(), kind, json.dumps(data, ensure_ascii=False)]
-            try:
-                self.sheet.append_row(event, value_input_option='RAW')
-            except Exception:
-                # 응답 유실 때 성공한 저장을 재실행하지 않음
-                if eid not in self.sheet.col_values(1):
-                    raise
+            self._append(kind, data)
+
+    def undo_save(self, kind, saved, previous, expected, today):
+        with self.lock:
+            records, plan, hana_records, revision = self.load_details()
+            if revision != expected:
+                raise ValueError('내역이 변경되었습니다. 새로고침 후 취소해주세요.')
+            if kind not in ('save', 'hana_save'):
+                raise ValueError('취소할 저장 유형을 확인해주세요.')
+            target = records if kind == 'save' else hana_records
+            current = next((record for record in target if record['id'] == saved['id']), None)
+            if current != saved:
+                raise ValueError('저장 이후 해당 내역이 수정 또는 삭제되어 바로 취소할 수 없습니다.')
+            if previous is None:
+                self._append('delete' if kind == 'save' else 'hana_delete', {'id':saved['id']})
+            else:
+                if previous['id'] != saved['id']:
+                    raise ValueError('취소할 내역의 식별 정보가 다릅니다.')
+                if kind == 'save':
+                    validate(previous, records, today)
+                else:
+                    validate_hana(previous, hana_records, today, allow_legacy=True)
+                self._append(kind, previous)
+
+    def _append(self, kind, data):
+        eid = str(uuid.uuid4())
+        event = [eid, datetime.now(timezone.utc).isoformat(), kind, json.dumps(data, ensure_ascii=False)]
+        try:
+            self.sheet.append_row(event, value_input_option='RAW')
+        except Exception:
+            # 응답 유실 때 성공한 저장을 재실행하지 않음
+            if eid not in self.sheet.col_values(1):
+                raise
