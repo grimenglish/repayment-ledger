@@ -5,6 +5,7 @@ import streamlit as st
 from core import amount_words, MAX_AMOUNT
 from hana import HANA_PRINCIPAL, HANA_SHARES, hana_balance, hana_balances, hana_unallocated, monthly_interest, repayment_fee, hana_excel
 from easy_ui import choose_person, repeat_button
+from design_ui import MOTHER_COLOR, ME_COLOR, history_cards
 
 def render_hana(records, today, mutate, gauge, amount_input):
     left = hana_balance(records)
@@ -16,7 +17,7 @@ def render_hana(records, today, mutate, gauge, amount_input):
         gauge('하나은행 전체',left,HANA_PRINCIPAL,'#009b8d')
         st.warning('이전 하나은행 내역에 엄마·본인 배분이 없습니다. 내역 · 수정 탭에서 각 내역의 배분을 저장하면 개인별 잔액과 이자가 표시됩니다.')
     else:
-        for col,person,label,original,color in zip(st.columns(3),['total','mother','me'],['하나은행 전체','엄마','본인'],[HANA_PRINCIPAL,HANA_SHARES['mother'],HANA_SHARES['me']],['#009b8d','#2563eb','#8b5cf6']):
+        for col,person,label,original,color in zip(st.columns(3),['total','mother','me'],['하나은행 전체','엄마','본인'],[HANA_PRINCIPAL,HANA_SHARES['mother'],HANA_SHARES['me']],['#334155',MOTHER_COLOR,ME_COLOR]):
             value=left if person=='total' else remaining[person]
             with col:
                 gauge(label,value,original,color)
@@ -110,12 +111,15 @@ def render_hana(records, today, mutate, gauge, amount_input):
                 rows.append({'상환일':record['date'],'갚은 원금':record['principal'],'실제 납부 이자':record['interest'],'상환수수료':record['fee'],'수수료 구분':'실제' if record['fee_basis']=='actual' else '예상','상환 후 잔액':balance,'상환 후 예상 월 이자':monthly_interest(balance),'월 이자 감소액':monthly_interest(record['principal']),'메모':record['memo']})
                 rows[-1].update({'엄마 원금':record.get('mother','배분 확인 필요'),'본인 원금':record.get('me','배분 확인 필요'),'엄마 납부 이자':record.get('mother_interest','배분 확인 필요'),'본인 납부 이자':record.get('me_interest','배분 확인 필요')})
         if rows:
-            st.dataframe(pd.DataFrame(rows),hide_index=True,width='stretch')
+            selected=[r for r in records if month=='전체' or r['date'][:7]==month]
+            history_cards(selected,'하나은행','hana_edit_select','open_hana_editor','hana_history',bank=True)
+            with st.expander('표로 하나은행 전체 내역 보기'):
+                st.dataframe(pd.DataFrame(rows),hide_index=True,width='stretch')
         else:
             st.info('조회할 하나은행 상환 내역이 없습니다.')
         st.download_button('하나은행 장부 엑셀 다운로드',hana_excel(records),file_name=f'하나은행_상환장부_{today.isoformat()}.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         if records:
-            with st.expander('하나은행 내역 수정 · 삭제'):
+            with st.expander('하나은행 내역 수정 · 삭제',expanded=st.session_state.pop('open_hana_editor',False)):
                 mapping={r['id']:r for r in records}
                 chosen=st.selectbox('변경할 하나은행 내역',list(mapping),format_func=lambda i:f'{mapping[i]["date"]} / {mapping[i]["principal"]:,}원 / {i[:8]}',key='hana_edit_select')
                 form('hana_edit_'+chosen,mapping[chosen])

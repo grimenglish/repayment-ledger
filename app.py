@@ -13,13 +13,10 @@ from hana_ui import render_hana
 from hana import hana_balance, hana_balances, hana_unallocated, monthly_interest
 from easy_ui import choose_person, repeat_button, amount_buttons, last_record
 from backup import backup_excel
+from design_ui import THEME, MOTHER_COLOR, ME_COLOR, person_card, main_navigation, request_tab, make_receipt, render_receipt, history_cards
 
 st.set_page_config(page_title='우리집 상환장부', page_icon='◔', layout='wide')
-st.markdown('''<style>
-.stApp{background:#f6f8fc} .block-container{max-width:1180px;padding-top:2rem}
-h1{letter-spacing:-1.7px} [data-testid="stMetric"]{background:white;padding:18px;border:1px solid #e5eaf3;border-radius:16px}
-[data-testid="stVerticalBlockBorderWrapper"]{border-radius:18px} .stButton>button{border-radius:10px}
-</style>''', unsafe_allow_html=True)
+st.markdown(THEME,unsafe_allow_html=True)
 
 def authenticate():
     try:
@@ -179,6 +176,7 @@ def mutate(kind, data, message='Google Sheets에 저장했습니다.'):
         st.session_state.pop('backup_downloaded',None)
     if kind in ('save','hana_save'):
         st.session_state['last_save']={'kind':kind,'saved':dict(data),'previous':dict(previous) if previous else None}
+        st.session_state['payment_receipt']=make_receipt(kind,data,previous,records,hana_records)
     st.rerun()
 
 def amount_input(container, label, value, step, key, maximum=MAX_AMOUNT, quick=False):
@@ -187,6 +185,9 @@ def amount_input(container, label, value, step, key, maximum=MAX_AMOUNT, quick=F
     if quick:
         amount_buttons(container,key,maximum)
     return amount
+
+if receipt:=st.session_state.pop('payment_receipt',None):
+    render_receipt(receipt)
 
 if backup_status['overdue']:
     st.warning('상환장부 백업 시기가 되었습니다. 전체 장부를 엑셀로 내려받아 보관해주세요.')
@@ -223,28 +224,31 @@ if pending:=st.session_state.get('last_save'):
             st.session_state['notice']='방금 저장을 취소했습니다.'
             st.rerun()
 
-overview, entry, history, settings, hana_tab = st.tabs(['전체 현황', '가족 대출', '가족 내역 · 엑셀', '가족 계획 · 선상환', '하나은행 대출'])
+tabs=main_navigation(['전체 현황', '가족 대출', '가족 내역 · 엑셀', '가족 계획 · 선상환', '하나은행 대출'])
+overview,entry,history,settings,hana_tab=(tabs[label] for label in ['전체 현황','가족 대출','가족 내역 · 엑셀','가족 계획 · 선상환','하나은행 대출'])
 with overview:
-    st.subheader('우리집 대출 한눈에 보기')
-    a,b,c=st.columns(3)
+    st.subheader('얼마나 갚았을까요?')
     bank_remaining=hana_balances(hana_records)
     if not hana_unallocated(hana_records):
-        a.metric('엄마 남은 대출',f'{remaining["mother"]+bank_remaining["mother"]:,}원')
-        a.caption(f'가족 {remaining["mother"]:,}원 + 하나은행 {bank_remaining["mother"]:,}원')
-        b.metric('내 남은 대출',f'{remaining["me"]+bank_remaining["me"]:,}원')
-        b.caption(f'가족 {remaining["me"]:,}원 + 하나은행 {bank_remaining["me"]:,}원')
-        c.metric('하나은행 예상 월 이자',f'약 {monthly_interest(hana_balance(hana_records)):,}원')
-        c.caption(f'엄마 약 {monthly_interest(bank_remaining["mother"]):,}원 / 본인 약 {monthly_interest(bank_remaining["me"]):,}원')
+        a,b=st.columns(2)
+        with a:
+            person_card('mother','엄마',remaining['mother']+bank_remaining['mother'],120_000_000,remaining['mother'],bank_remaining['mother'])
+        with b:
+            person_card('me','본인',remaining['me']+bank_remaining['me'],150_000_000,remaining['me'],bank_remaining['me'])
     else:
+        a,b,c=st.columns(3)
         a.metric('가족 대출 잔액',f'{sum(remaining.values()):,}원')
         b.metric('하나은행 잔액',f'{hana_balance(hana_records):,}원')
         c.metric('하나은행 예상 월 이자',f'약 {monthly_interest(hana_balance(hana_records)):,}원')
         st.info('이전 하나은행 내역의 배분을 확인하면 엄마·본인 총 잔액이 표시됩니다.')
-    st.metric('전체 남은 원금',f'{sum(remaining.values())+hana_balance(hana_records):,}원')
-    st.caption('상환하려면 위에서 가족 대출 또는 하나은행 대출을 선택하세요. 원금을 갚은 사람에 따라 각자의 잔액이 줄어듭니다.')
-    st.markdown('**간편 입력 순서**: 대출 선택 → 엄마·본인 선택 → 금액 입력 → 확인 후 저장')
+    st.caption(f'우리집 전체 잔액 {sum(remaining.values())+hana_balance(hana_records):,}원 · 하나은행 예상 월 이자 약 {monthly_interest(hana_balance(hana_records)):,}원')
+    with st.container(border=True):
+        st.subheader('오늘 갚은 돈을 기록하세요')
+        loan=st.radio('갚을 대출',['가족 대출','하나은행 대출'],horizontal=True,key='start_repayment_loan')
+        st.button('상환 기록하기',type='primary',width='stretch',key='start_repayment',on_click=request_tab,args=(loan,))
+        st.caption('대출 선택 → 엄마·본인 선택 → 금액 입력. 날짜는 오늘로 채워집니다.')
 with entry:
-    for col, label, left, original, color in zip(st.columns(3), ['전체', '엄마', '본인'], [sum(remaining.values()), remaining['mother'], remaining['me']], [PRINCIPAL*2, PRINCIPAL, PRINCIPAL], ['#2563eb', '#0d9488', '#8b5cf6']):
+    for col, label, left, original, color in zip(st.columns(3), ['전체', '엄마', '본인'], [sum(remaining.values()), remaining['mother'], remaining['me']], [PRINCIPAL*2, PRINCIPAL, PRINCIPAL], ['#334155', MOTHER_COLOR, ME_COLOR]):
         with col:
             gauge(label, left, original, color)
 
@@ -316,16 +320,18 @@ with history:
     selected = [r for r in records if month == '전체' or r['date'][:7] == month]
     labels = {'date':'상환일','bank':'은행','sender':'실제 송금자','total':'총 송금액','mother':'엄마 원금','me':'본인 원금','interest':'이자','memo':'메모'}
     if selected:
-        st.dataframe(pd.DataFrame(selected)[list(labels)].rename(columns=labels), hide_index=True, width="stretch")
+        history_cards(selected,'가족 대출','family_edit_selection','open_family_editor','family_history')
+        with st.expander('표로 전체 내역 보기'):
+            st.dataframe(pd.DataFrame(selected)[list(labels)].rename(columns=labels), hide_index=True, width="stretch")
         st.caption(f'조회 합계: 원금 {sum(r["mother"]+r["me"] for r in selected):,}원 / 이자 {sum(r["interest"] for r in selected):,}원')
     else:
         st.info('아직 기록된 상환 내역이 없습니다.')
     st.download_button('가족 장부 엑셀 다운로드', excel(records, plan, today), file_name=f'상환장부_{today.isoformat()}.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     if records:
-        with st.expander('내역 수정 · 삭제'):
+        with st.expander('내역 수정 · 삭제',expanded=st.session_state.pop('open_family_editor',False)):
             ids = [r['id'] for r in records]
             mapping = {r['id']:r for r in records}
-            chosen = st.selectbox('변경할 내역', ids, format_func=lambda i:f'{mapping[i]["date"]} / {mapping[i]["bank"]} / {mapping[i]["total"]:,}원 / {i[:8]}')
+            chosen = st.selectbox('변경할 내역', ids, format_func=lambda i:f'{mapping[i]["date"]} / {mapping[i]["bank"]} / {mapping[i]["total"]:,}원 / {i[:8]}',key='family_edit_selection')
             record_form('edit_'+chosen, mapping[chosen])
             confirm = st.checkbox('선택한 내역을 삭제합니다.', key='confirm_'+chosen)
             if st.button('선택 내역 삭제', disabled=not confirm):

@@ -36,6 +36,61 @@ class Tests(unittest.TestCase):
         import streamlit as st
         st.cache_resource.clear()
 
+    def test_receipt_balances_new_and_edit(self):
+        from design_ui import make_receipt
+        old=record()
+        value=make_receipt('save',old,None,[],[])
+        self.assertEqual(value['before']['mother']-value['after']['mother'],4_000_000)
+        changed=record(mother=3_000_000,total=4_000_000)
+        value=make_receipt('save',changed,old,[old],[])
+        self.assertTrue(value['edited'])
+        self.assertEqual(value['after']['mother']-value['before']['mother'],1_000_000)
+
+    def test_bank_receipt_interest_and_legacy(self):
+        from design_ui import make_receipt
+        saved=bank_record()
+        value=make_receipt('hana_save',saved,None,[],[])
+        self.assertEqual(monthly_interest(value['before']['me'])-monthly_interest(value['after']['me']),38_334)
+        legacy={key:item for key,item in saved.items() if key not in ('mother','me','mother_interest','me_interest')}
+        value=make_receipt('hana_save',saved,legacy,[],[legacy])
+        self.assertFalse(value['before_known'])
+        self.assertTrue(value['split_ready'])
+
+    def test_design_navigation_and_history_edit(self):
+        s=fake_store()
+        s.mutate('save',record(),s.load()[2],TODAY)
+        with patch('storage.GoogleStore',return_value=s):
+            app=AppTest.from_file('app.py')
+            app.secrets['login']={'salt':'test','password_hash':'test'}
+            app.session_state['authenticated_until']=time.time()+1000
+            app.run()
+            app.radio(key='start_repayment_loan').set_value('하나은행 대출').run()
+            app.button(key='start_repayment').click().run()
+            self.assertFalse(app.exception)
+            self.assertEqual(app.session_state['main_navigation'],'하나은행 대출')
+            app.button(key='family_history_edit_a').click().run()
+            self.assertFalse(app.exception)
+            self.assertEqual(app.selectbox(key='family_edit_selection').value,'a')
+            bars=[m.value for m in app.markdown if 'role="progressbar"' in m.value]
+            self.assertTrue(any('aria-valuenow="3.3"' in m and '#0d9488' in m for m in bars))
+
+    def test_design_saved_result(self):
+        s=fake_store()
+        with patch('storage.GoogleStore',return_value=s):
+            app=AppTest.from_file('app.py')
+            app.secrets['login']={'salt':'test','password_hash':'test'}
+            app.secrets['sender_name']='본인'
+            app.session_state['authenticated_until']=time.time()+1000
+            app.run()
+            app.radio(key='new_manual_person').set_value('본인만').run()
+            app.number_input(key='new_manual_me').set_value(1_000_000).run()
+            app.button(key='new_manual_save').click().run()
+            self.assertFalse(app.exception)
+            results=[m.value for m in app.markdown if 'class="payment-receipt"' in m.value]
+            self.assertEqual(len(results),1)
+            self.assertIn('본인 1,000,000원 상환 완료',results[0])
+            self.assertIn('100,000,000원 → 99,000,000원',results[0])
+
     def test_annual_backup_dates(self):
         value=['e','2026-10-01T01:00:00+00:00','save',json.dumps(record())]
         self.assertFalse(backup_state([value],date(2027,9,30))['overdue'])
