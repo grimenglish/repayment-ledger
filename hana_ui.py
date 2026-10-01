@@ -5,7 +5,7 @@ import streamlit as st
 from core import amount_words, MAX_AMOUNT
 from hana import HANA_PRINCIPAL, HANA_SHARES, hana_balance, hana_balances, hana_unallocated, monthly_interest, repayment_fee, hana_excel
 from easy_ui import choose_person, repeat_button
-from design_ui import MOTHER_COLOR, ME_COLOR, history_cards
+from design_ui import MOTHER_COLOR, ME_COLOR, history_cards, main_navigation
 
 def render_hana(records, today, mutate, gauge, amount_input):
     left = hana_balance(records)
@@ -13,22 +13,25 @@ def render_hana(records, today, mutate, gauge, amount_input):
     unallocated=hana_unallocated(records)
     st.subheader('하나은행 대출')
     st.caption('엄마 2,000만 원 / 본인 5,000만 원 · 연 4.6% · 상환수수료율 0.49% · 실제 출금 계좌는 본인 계좌입니다.')
-    if unallocated:
-        gauge('하나은행 전체',left,HANA_PRINCIPAL,'#009b8d')
-        st.warning('이전 하나은행 내역에 엄마·본인 배분이 없습니다. 내역 · 수정 탭에서 각 내역의 배분을 저장하면 개인별 잔액과 이자가 표시됩니다.')
-    else:
-        for col,person,label,original,color in zip(st.columns(3),['total','mother','me'],['하나은행 전체','엄마','본인'],[HANA_PRINCIPAL,HANA_SHARES['mother'],HANA_SHARES['me']],['#334155',MOTHER_COLOR,ME_COLOR]):
-            value=left if person=='total' else remaining[person]
-            with col:
-                gauge(label,value,original,color)
-                st.metric(label+' 예상 월 이자',f'약 {monthly_interest(value):,}원')
-                st.caption(f'처음보다 월 이자 약 {monthly_interest(original-value):,}원 감소')
-    a,b,c=st.columns(3)
-    a.metric('남은 원금', f'{left:,}원')
-    b.metric('현재 예상 월 이자', f'약 {monthly_interest(left):,}원')
-    c.metric('처음보다 줄어든 월 이자', f'약 {monthly_interest(HANA_PRINCIPAL-left):,}원')
-    st.caption('예상 월 이자 = 남은 원금 × 연 4.6% ÷ 12. 실제 청구액은 납부일·일수와 은행 계산 방식에 따라 달라집니다.')
-    entry, history, simulation = st.tabs(['하나은행 상환 입력', '하나은행 내역 · 수정', '상환 미리 계산'])
+    with st.expander('하나은행 잔액 · 이자 자세히'):
+        if unallocated:
+            gauge('하나은행 전체',left,HANA_PRINCIPAL,'#009b8d')
+            st.warning('이전 하나은행 내역에 엄마·본인 배분이 없습니다. 내역 · 수정 탭에서 각 내역의 배분을 저장하면 개인별 잔액과 이자가 표시됩니다.')
+        else:
+            for col,person,label,original,color in zip(st.columns(3),['total','mother','me'],['하나은행 전체','엄마','본인'],[HANA_PRINCIPAL,HANA_SHARES['mother'],HANA_SHARES['me']],['#334155',MOTHER_COLOR,ME_COLOR]):
+                value=left if person=='total' else remaining[person]
+                with col:
+                    gauge(label,value,original,color)
+                    st.metric(label+' 예상 월 이자',f'약 {monthly_interest(value):,}원')
+                    st.caption(f'처음보다 월 이자 약 {monthly_interest(original-value):,}원 감소')
+        a,b,c=st.columns(3)
+        a.metric('남은 원금', f'{left:,}원')
+        b.metric('현재 예상 월 이자', f'약 {monthly_interest(left):,}원')
+        c.metric('처음보다 줄어든 월 이자', f'약 {monthly_interest(HANA_PRINCIPAL-left):,}원')
+        st.caption('예상 월 이자 = 남은 원금 × 연 4.6% ÷ 12. 실제 청구액은 납부일·일수와 은행 계산 방식에 따라 달라집니다.')
+    labels=['하나은행 상환 입력', '하나은행 내역 · 수정', '상환 미리 계산']
+    tabs=main_navigation(labels,key='hana_navigation')
+    entry,history,simulation=(tabs[label] for label in labels)
 
     def preview(mother, me, before, total_before=None, show_split=True):
         principal=mother+me

@@ -8,6 +8,17 @@ MOTHER_COLOR='#0d9488'
 ME_COLOR='#2563eb'
 THEME='''<style>
 .stApp{background:#f5f7fb;color:#17233d}
+.overview-hero{background:linear-gradient(120deg,#12213e,#254776);border-radius:24px;padding:28px 32px;color:#fff;margin:12px 0 24px;box-shadow:0 12px 32px #17233d12}
+.overview-hero .hero-kicker{color:#c4d5f1;font-size:.9rem;letter-spacing:.6px}
+.overview-hero .hero-amount{font-size:2.5rem;font-weight:800;letter-spacing:-1.5px;margin:8px 0}
+.overview-hero .hero-note{color:#d8e6fa;line-height:1.7}
+.monthly-goal{background:#f5f8fd;border-radius:16px;padding:16px 18px;margin:12px 0}
+.monthly-goal .goal-label{font-size:.85rem;color:#526177}
+.monthly-goal .goal-amount{font-size:1.65rem;font-weight:750;letter-spacing:-.7px;margin:4px 0}
+.st-key-overview_mother,.st-key-overview_me{background:#fff;border-radius:22px;box-shadow:0 6px 24px #17233d08}
+.st-key-overview_mother{border-top:4px solid #0d9488}
+.st-key-overview_me{border-top:4px solid #2563eb}
+.milestone{padding:12px 16px;border-radius:12px;background:#fff6dc;color:#705214;font-weight:650;margin:12px 0 0}
 .block-container{max-width:1160px;padding-top:2rem;padding-bottom:3rem}
 h1{letter-spacing:-1.5px} h2,h3{letter-spacing:-.6px}
 [data-testid="stVerticalBlockBorderWrapper"]{border-radius:20px;border-color:#e2e8f0;background:#fff}
@@ -24,10 +35,38 @@ h1{letter-spacing:-1.5px} h2,h3{letter-spacing:-.6px}
 .payment-receipt p{margin:6px 0;font-size:1rem;line-height:1.7}
 .role-pill{display:inline-block;border-radius:10px;padding:8px 12px;margin:5px 8px 5px 0;font-weight:650}
 .role-mother{background:#e7f8f4;color:#08776d}.role-me{background:#eaf0ff;color:#1d4ed8}
-@media(max-width:600px){[data-testid="stMetricValue"]{font-size:1.7rem}.block-container{padding-top:1rem}.payment-receipt{padding:18px}}
+@media(max-width:600px){[data-testid="stMetricValue"]{font-size:1.7rem}.block-container{padding-top:1rem}.payment-receipt{padding:18px}.overview-hero{padding:22px}.overview-hero .hero-amount{font-size:2rem}}
 </style>'''
 
-def person_card(person, label, left, original, family_left, bank_left):
+def monthly_goal(left,paid,plan):
+    target=min(plan,left+paid)
+    due=min(left,max(target-paid,0))
+    status='완납 완료' if left==0 else '월 목표 설정 필요' if plan==0 else '이번 달 목표 달성' if due==0 else '이번 달 더 갚을 금액'
+    return {'target':target,'due':due,'status':status}
+
+def request_person(person,loan,today):
+    if loan=='가족 대출':
+        st.session_state['family_auto_fill']=False
+        st.session_state['new_manual_person']='엄마만' if person=='mother' else '본인만'
+        st.session_state['new_manual_date']=today
+        for field in ('mother','me','interest'):
+            st.session_state['new_manual_'+field]=0
+        st.session_state['new_manual_memo']=''
+        st.session_state['new_manual_compare']=False
+    else:
+        st.session_state['hana_new_person']='엄마만' if person=='mother' else '본인만'
+        st.session_state['hana_new_date']=today
+        for field in ('mother','me','mother_interest','me_interest'):
+            st.session_state['hana_new_'+field]=0
+        st.session_state['hana_new_actual']=False
+        st.session_state['hana_new_memo']=''
+        request_tab('하나은행 상환 입력','hana_navigation')
+    request_tab(loan)
+
+def overview_hero(left,paid,due,today):
+    st.markdown(f'<div class="overview-hero"><div class="hero-kicker">OUR FAMILY · {today:%Y.%m}</div><div class="hero-amount">남은 대출 {left:,}원</div><div class="hero-note">지금까지 {paid:,}원 상환<br>가족 대출 이번 달 남은 목표 <b>{due:,}원</b></div></div>',unsafe_allow_html=True)
+
+def person_card(person, label, left, original, family_left, bank_left,month_paid,plan,today):
     color=MOTHER_COLOR if person=='mother' else ME_COLOR
     paid=original-left
     with st.container(border=True,key='overview_'+person):
@@ -38,25 +77,49 @@ def person_card(person, label, left, original, family_left, bank_left):
         st.markdown(f'<div role="progressbar" aria-label="{escape(label)} 상환 진행률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{percentage:.1f}" style="background:#e2e8f0;border-radius:8px;overflow:hidden;height:16px"><div style="width:{percentage:.4f}%;height:16px;background:{color}"></div></div>',unsafe_allow_html=True)
         st.markdown(f'**지금까지 {paid:,}원 상환 · {paid/original*100:.1f}% 완료**')
         st.caption(f'처음 빌린 금액 {original:,}원')
-        st.metric(label+' 하나은행 예상 월 이자',f'약 {monthly_interest(bank_left):,}원')
+        goal=monthly_goal(family_left,month_paid,plan)
+        st.markdown(f'<div class="monthly-goal"><div class="goal-label">가족 대출 · {goal["status"]}</div><div class="goal-amount" style="color:{color}">{goal["due"]:,}원</div><div class="goal-label">이번 달 {month_paid:,}원 상환 / 목표 {goal["target"]:,}원</div></div>',unsafe_allow_html=True)
+        st.caption(f'하나은행 예상 월 이자 약 {monthly_interest(bank_left):,}원')
+        a,b=st.columns(2)
+        a.button('가족 상환 기록',key='card_'+person+'_family',type='primary',width='stretch',on_click=request_person,args=(person,'가족 대출',today),disabled=family_left==0)
+        b.button('하나은행 상환 기록',key='card_'+person+'_hana',width='stretch',on_click=request_person,args=(person,'하나은행 대출',today),disabled=bank_left==0)
         with st.expander('대출별 잔액 보기'):
             st.write(f'가족 대출 **{family_left:,}원**')
             st.write(f'하나은행 **{bank_left:,}원**')
 
-def main_navigation(labels):
+def main_navigation(labels,key='main_navigation'):
     parameters=inspect.signature(st.tabs).parameters
     if all(key in parameters for key in ('default','key','on_change')):
-        containers=st.tabs(labels,default=labels[0],key='main_navigation',on_change='rerun')
+        containers=st.tabs(labels,default=labels[0],key=key,on_change='rerun')
         return dict(zip(labels,containers))
-    active=st.session_state.get('requested_tab',labels[0])
+    active=st.session_state.get('requested_tab' if key=='main_navigation' else 'requested_'+key,labels[0])
     ordered=[active]+[label for label in labels if label!=active] if active in labels else labels
     return dict(zip(ordered,st.tabs(ordered)))
 
-def request_tab(label):
-    st.session_state['requested_tab']=label
+def request_tab(label,key='main_navigation'):
+    st.session_state['requested_tab' if key=='main_navigation' else 'requested_'+key]=label
     # Older Streamlit versions select the requested tab by reordering labels.
     if 'key' in inspect.signature(st.tabs).parameters:
-        st.session_state['main_navigation']=label
+        st.session_state[key]=label
+
+def achievement_messages(receipt):
+    if receipt['edited'] or not receipt['before_known'] or not receipt['split_ready']:
+        return []
+    originals={'mother':100_000_000,'me':100_000_000} if receipt['kind']=='save' else {'mother':20_000_000,'me':50_000_000}
+    source='가족 대출' if receipt['kind']=='save' else '하나은행'
+    messages=[]
+    for person,label in [('mother','엄마'),('me','본인')]:
+        before,after=receipt['before'][person],receipt['after'][person]
+        if after>=before: continue
+        original=originals[person]
+        before_paid,after_paid=original-before,original-after
+        if after==0:
+            messages.append(f'{label} {source} 완납! 끝까지 해냈어요.')
+        elif (after_paid*10//original)>(before_paid*10//original):
+            messages.append(f'{label} {source} {after_paid*10//original*10}% 상환 달성! 꾸준히 나아가고 있어요.')
+        elif after_paid//10_000_000>before_paid//10_000_000:
+            messages.append(f'{label} {source} 누적 {after_paid//10_000_000*1_000:,}만원 상환! 한 걸음 더 가까워졌어요.')
+    return messages
 
 def make_receipt(kind, saved, previous, family_records, bank_records):
     if kind=='save':
@@ -97,6 +160,8 @@ def render_receipt(receipt):
     if receipt['kind']=='hana_save':
         basis='실제 입력' if record['fee_basis']=='actual' else '예상'
         lines.append(f'<p>상환수수료 {record["fee"]:,}원 · {basis}</p>')
+    for message in achievement_messages(receipt):
+        lines.append(f'<div class="milestone">✦ {escape(message)}</div>')
     st.markdown(f'<div class="payment-receipt"><small>{source} · {escape(record["date"])}</small><h2>{escape(heading)}</h2>'+''.join(lines)+'</div>',unsafe_allow_html=True)
     st.caption('이 화면은 방금 저장한 결과입니다. 수정 입력은 새 상환을 추가하지 않고 기존 내역을 변경합니다.')
 

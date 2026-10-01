@@ -36,6 +36,85 @@ class Tests(unittest.TestCase):
         import streamlit as st
         st.cache_resource.clear()
 
+    def test_monthly_goal_states(self):
+        from design_ui import monthly_goal
+        self.assertEqual(monthly_goal(96_000_000,4_000_000,4_000_000)['status'],'이번 달 목표 달성')
+        self.assertEqual(monthly_goal(99_000_000,1_000_000,4_000_000)['due'],3_000_000)
+        self.assertEqual(monthly_goal(500_000,0,4_000_000)['due'],500_000)
+        self.assertEqual(monthly_goal(5_000_000,0,0)['status'],'월 목표 설정 필요')
+        self.assertEqual(monthly_goal(0,100_000_000,4_000_000)['status'],'완납 완료')
+
+    def test_milestone_only_new_verified_repayments(self):
+        from design_ui import make_receipt, achievement_messages
+        saved=record(mother=10_000_000,me=0,total=10_000_000)
+        value=make_receipt('save',saved,None,[],[])
+        self.assertIn('10% 상환 달성',achievement_messages(value)[0])
+        self.assertEqual(achievement_messages(make_receipt('save',saved,saved,[saved],[])),[])
+        self.assertEqual(achievement_messages(make_receipt('save',record(mother=0,me=0,total=1,interest=1),None,[],[])),[])
+        bank=bank_record(principal=20_000_000,mother=20_000_000,me=0)
+        self.assertIn('완납',achievement_messages(make_receipt('hana_save',bank,None,[],[]))[0])
+
+    def test_person_card_routes_both_loans_and_does_not_save(self):
+        s=fake_store()
+        with patch('storage.GoogleStore',return_value=s):
+            app=AppTest.from_file('app.py')
+            app.secrets['login']={'salt':'test','password_hash':'test'}
+            app.session_state['authenticated_until']=time.time()+1000
+            app.run()
+            app.toggle(key='family_auto_fill').set_value(True).run()
+            app.number_input(key='new_quick_me').set_value(500_000).run()
+            app.button(key='card_mother_family').click().run()
+            self.assertFalse(app.exception)
+            self.assertEqual(app.session_state['main_navigation'],'가족 대출')
+            self.assertEqual(app.radio(key='new_manual_person').value,'엄마만')
+            self.assertEqual(app.number_input(key='new_manual_mother').value,0)
+            self.assertFalse(app.toggle(key='family_auto_fill').value)
+            app.button(key='card_me_hana').click().run()
+            self.assertFalse(app.exception)
+            self.assertEqual(app.session_state['main_navigation'],'하나은행 대출')
+            self.assertEqual(app.session_state['hana_navigation'],'하나은행 상환 입력')
+            self.assertEqual(app.radio(key='hana_new_person').value,'본인만')
+            self.assertEqual(app.number_input(key='hana_new_me').value,0)
+            self.assertEqual(s.load_details()[0],[])
+            self.assertEqual(s.load_details()[2],[])
+
+    def test_dashboard_month_goal_visible(self):
+        s=fake_store()
+        s.mutate('save',record(),s.load()[2],TODAY)
+        with patch('storage.GoogleStore',return_value=s):
+            app=AppTest.from_file('app.py')
+            app.secrets['login']={'salt':'test','password_hash':'test'}
+            app.session_state['authenticated_until']=time.time()+1000
+            app.run()
+            self.assertFalse(app.exception)
+            panels=[m.value for m in app.markdown if 'class="monthly-goal"' in m.value]
+            self.assertEqual(len(panels),2)
+            self.assertTrue(all('이번 달 목표 달성' in m for m in panels))
+
+    def test_quote_pool_and_no_immediate_repeat(self):
+        from quotes_ui import QUOTES, choose_quote
+        self.assertEqual(len(QUOTES),7)
+        for index in range(len(QUOTES)):
+            self.assertNotEqual(choose_quote(index),index)
+            self.assertTrue(all(QUOTES[index]))
+            self.assertTrue(QUOTES[index][-1].startswith('https://www.gutenberg.org/'))
+
+    def test_header_quote_stays_during_input_and_rotates(self):
+        s=fake_store()
+        with patch('storage.GoogleStore',return_value=s):
+            app=AppTest.from_file('app.py')
+            app.secrets['login']={'salt':'test','password_hash':'test'}
+            app.session_state['authenticated_until']=time.time()+1000
+            app.run()
+            before=app.session_state['header_quote']
+            app.number_input(key='new_manual_me').set_value(100_000).run()
+            self.assertEqual(app.session_state['header_quote'],before)
+            app.button(key='rotate_header_quote').click().run()
+            self.assertFalse(app.exception)
+            self.assertNotEqual(app.session_state['header_quote'],before)
+            self.assertEqual(app.number_input(key='new_manual_me').value,100_000)
+            self.assertEqual(s.load()[0],[])
+
     def test_receipt_balances_new_and_edit(self):
         from design_ui import make_receipt
         old=record()

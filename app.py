@@ -13,7 +13,8 @@ from hana_ui import render_hana
 from hana import hana_balance, hana_balances, hana_unallocated, monthly_interest
 from easy_ui import choose_person, repeat_button, amount_buttons, last_record
 from backup import backup_excel
-from design_ui import THEME, MOTHER_COLOR, ME_COLOR, person_card, main_navigation, request_tab, make_receipt, render_receipt, history_cards
+from quotes_ui import render_header
+from design_ui import THEME, MOTHER_COLOR, ME_COLOR, person_card, main_navigation, request_tab, make_receipt, render_receipt, history_cards, monthly_goal, overview_hero
 
 st.set_page_config(page_title='우리집 상환장부', page_icon='◔', layout='wide')
 st.markdown(THEME,unsafe_allow_html=True)
@@ -82,7 +83,7 @@ authenticate()  # 데이터 연결과 조회보다 먼저 실행
 def connect():
     return GoogleStore(st.secrets)
 
-st.title('우리집 상환장부')
+render_header()
 st.caption('가족 상환장부 · 하나은행 대출을 탭별로 관리합니다.')
 try:
     store = connect()
@@ -227,14 +228,17 @@ if pending:=st.session_state.get('last_save'):
 tabs=main_navigation(['전체 현황', '가족 대출', '가족 내역 · 엑셀', '가족 계획 · 선상환', '하나은행 대출'])
 overview,entry,history,settings,hana_tab=(tabs[label] for label in ['전체 현황','가족 대출','가족 내역 · 엑셀','가족 계획 · 선상환','하나은행 대출'])
 with overview:
-    st.subheader('얼마나 갚았을까요?')
+    total_left=sum(remaining.values())+hana_balance(hana_records)
+    monthly_due=sum(monthly_goal(remaining[p],paid[p],plan[p])['due'] for p in ('mother','me'))
+    overview_hero(total_left,270_000_000-total_left,monthly_due,today)
+    st.subheader('엄마와 본인, 한눈에')
     bank_remaining=hana_balances(hana_records)
     if not hana_unallocated(hana_records):
         a,b=st.columns(2)
         with a:
-            person_card('mother','엄마',remaining['mother']+bank_remaining['mother'],120_000_000,remaining['mother'],bank_remaining['mother'])
+            person_card('mother','엄마',remaining['mother']+bank_remaining['mother'],120_000_000,remaining['mother'],bank_remaining['mother'],paid['mother'],plan['mother'],today)
         with b:
-            person_card('me','본인',remaining['me']+bank_remaining['me'],150_000_000,remaining['me'],bank_remaining['me'])
+            person_card('me','본인',remaining['me']+bank_remaining['me'],150_000_000,remaining['me'],bank_remaining['me'],paid['me'],plan['me'],today)
     else:
         a,b,c=st.columns(3)
         a.metric('가족 대출 잔액',f'{sum(remaining.values()):,}원')
@@ -248,27 +252,9 @@ with overview:
         st.button('상환 기록하기',type='primary',width='stretch',key='start_repayment',on_click=request_tab,args=(loan,))
         st.caption('대출 선택 → 엄마·본인 선택 → 금액 입력. 날짜는 오늘로 채워집니다.')
 with entry:
-    for col, label, left, original, color in zip(st.columns(3), ['전체', '엄마', '본인'], [sum(remaining.values()), remaining['mother'], remaining['me']], [PRINCIPAL*2, PRINCIPAL, PRINCIPAL], ['#334155', MOTHER_COLOR, ME_COLOR]):
-        with col:
-            gauge(label, left, original, color)
-
-    st.subheader('이번 달 상환 계획')
-    for col, p, label in zip(st.columns(2), ['mother', 'me'], ['엄마', '본인']):
-        with col:
-            target = min(plan[p], remaining[p] + paid[p])
-            due = min(remaining[p], max(target - paid[p], 0))
-            d = payoff(remaining[p], plan[p], paid[p], today)
-            with st.container(border=True):
-                st.markdown(f'**{label} · 월 {plan[p]:,}원**')
-                st.progress(min(paid[p]/target, 1.0) if target else 1.0)
-                st.write(f'이번 달 {paid[p]:,}원 상환 · 더 갚을 금액 **{due:,}원**')
-                st.caption('완납 완료' if not remaining[p] else f'예상 완납월: {d:%Y년 %m월}' if d else '예상 완납월: 월 목표 설정 필요')
-    ends = [payoff(remaining[p], plan[p], paid[p], today) for p in remaining]
-    st.caption(('전체 예상 완납월: ' + max(ends).strftime('%Y년 %m월')) if all(ends) else '전체 예상 완납월: 월 목표 설정 필요')
-    st.caption('이번 달 남은 목표액을 이번 달에 갚고, 다음 달부터 매월 목표액을 갚는 기준입니다. 이자는 원금을 줄이지 않습니다.')
-
+    st.subheader('가족 상환 기록하기')
     st.caption('엄마·본인이 갚은 원금과 이자를 입력하세요. 송금액은 자동으로 더합니다. 금액 입력 후 Enter를 누르거나 다른 칸을 클릭하면 한글 금액이 표시됩니다.')
-    quick = st.toggle('이번 달 정기 상환액 자동 채우기')
+    quick = st.toggle('이번 달 정기 상환액 자동 채우기',key='family_auto_fill')
     defaults = {p: min(remaining[p], max(plan[p]-paid[p],0)) if quick else 0 for p in remaining}
     def record_form(prefix, initial=None):
         initial = initial or {}
@@ -313,6 +299,25 @@ with entry:
             else:
                 mutate('save', record)
     record_form('new_quick' if quick else 'new_manual')
+    with st.expander('가족 대출 잔액 · 이번 달 계획 자세히'):
+        for col, label, left, original, color in zip(st.columns(3), ['전체', '엄마', '본인'], [sum(remaining.values()), remaining['mother'], remaining['me']], [PRINCIPAL*2, PRINCIPAL, PRINCIPAL], ['#334155', MOTHER_COLOR, ME_COLOR]):
+            with col:
+                gauge(label, left, original, color)
+
+        st.subheader('이번 달 상환 계획')
+        for col, p, label in zip(st.columns(2), ['mother', 'me'], ['엄마', '본인']):
+            with col:
+                target = min(plan[p], remaining[p] + paid[p])
+                due = min(remaining[p], max(target - paid[p], 0))
+                d = payoff(remaining[p], plan[p], paid[p], today)
+                with st.container(border=True):
+                    st.markdown(f'**{label} · 월 {plan[p]:,}원**')
+                    st.progress(min(paid[p]/target, 1.0) if target else 1.0)
+                    st.write(f'이번 달 {paid[p]:,}원 상환 · 더 갚을 금액 **{due:,}원**')
+                    st.caption('완납 완료' if not remaining[p] else f'예상 완납월: {d:%Y년 %m월}' if d else '예상 완납월: 월 목표 설정 필요')
+        ends = [payoff(remaining[p], plan[p], paid[p], today) for p in remaining]
+        st.caption(('전체 예상 완납월: ' + max(ends).strftime('%Y년 %m월')) if all(ends) else '전체 예상 완납월: 월 목표 설정 필요')
+        st.caption('이번 달 남은 목표액을 이번 달에 갚고, 다음 달부터 매월 목표액을 갚는 기준입니다. 이자는 원금을 줄이지 않습니다.')
 
 with history:
     months = ['전체'] + sorted({r['date'][:7] for r in records}, reverse=True)
