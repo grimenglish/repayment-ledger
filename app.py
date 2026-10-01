@@ -92,6 +92,14 @@ except Exception as error:
     status = getattr(getattr(error, 'response', None), 'status_code', None)
     st.code('오류 유형: ' + error_type + (f' / HTTP {status}' if isinstance(status, int) else ''))
     hints = {
+        'KeyFormatError': 'private_key 내용이 손상되었거나 일부가 빠졌습니다. 다운로드한 서비스 계정 JSON 파일의 private_key 값을 처음부터 끝까지 다시 복사해 Streamlit Secrets에 넣어주세요.',
+        'SheetFormatError': 'ledger_events_v1 탭의 A1~D1을 event_id / timestamp / type / payload로 맞춰주세요. 기존 상환 내역은 지우지 마세요.',
+        'LedgerDataError': '시트에 저장된 내역 형식이 올바르지 않습니다. ledger_events_v1 탭의 화면을 확인해주세요.',
+        'Timeout': 'Google 응답이 지연되었습니다. 잠시 후 연결 다시 시도를 눌러주세요.',
+        'ReadTimeout': 'Google 응답이 지연되었습니다. 잠시 후 연결 다시 시도를 눌러주세요.',
+        'ConnectTimeout': 'Google 연결이 지연되었습니다. 잠시 후 연결 다시 시도를 눌러주세요.',
+        'ConnectionError': 'Google에 연결할 수 없습니다. 잠시 후 연결 다시 시도를 눌러주세요.',
+        'APIError': 'Google Sheets API 요청이 실패했습니다. HTTP 403이면 API 사용 설정·편집 권한, 429이면 잠시 후 다시 시도를 확인해주세요.',
         'SpreadsheetNotFound': '시트 ID 또는 서비스 계정의 시트 공유 권한을 확인해주세요.',
         'PermissionError': '시트 편집자 권한과 Google Sheets API 사용 설정을 확인해주세요.',
         'MalformedError': '서비스 계정의 필수 설정 또는 private_key 형식을 확인해주세요.',

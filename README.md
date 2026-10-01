@@ -64,4 +64,8 @@ app.py: 화면·로그인 / core.py: 계산·엑셀 / storage.py: Google 저장 
 - Google 로그인: https://docs.streamlit.io/develop/concepts/connections/authentication
 - 서비스 계정: https://docs.gspread.org/en/master/oauth2.html
 
-검증 범위는 계산·엑셀·모의 저장소·Streamlit 테스트 화면입니다. 실제 Google 연결과 Cloud 배포는 아직 하지 않았습니다.
+## 안정성 점검 (v1.4)
+자체 테스트 23개 통과. 완납월 계산은 무작위 조건 1,000건을 월별 반복 계산 결과와 비교했습니다.
+본인 Google 이메일 및 이메일 검증 여부에 따른 접근 차단, 저장·수정·삭제, 원금 초과 차단, 동시 저장 충돌, 저장 성공 후 응답 유실, 손상된 내역·월 목표·JSON, 키 줄바꿈 보정, 빈 시트 초기화, 엑셀 수식 입력 차단과 완납 화면을 점검했습니다.
+잘못된 저장 내역은 화면 계산 전에 차단합니다. 메모의 엑셀 처리 불가 문자도 입력 시 차단합니다. Google 요청에는 연결 10초·읽기 30초 제한을 설정했습니다.
+검증 범위는 계산·엑셀·모의 Google 저장소·Streamlit 테스트 화면입니다. 실제 사용자 Google 계정 연결 및 Cloud에서의 동작은 이 자체 테스트에 포함되지 않습니다.

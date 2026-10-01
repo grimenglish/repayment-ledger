@@ -2,33 +2,81 @@ import json
 import threading
 import uuid
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import gspread
 from google.oauth2.service_account import Credentials
-from core import fold, digest, validate
+from core import fold, digest, validate, validate_plan
 
 HEADER = ['event_id', 'timestamp', 'type', 'payload']
 
+class KeyFormatError(ValueError):
+    pass
+
+class SheetFormatError(ValueError):
+    pass
+
+class LedgerDataError(ValueError):
+    pass
+
+def service_account_info(raw):
+    info = dict(raw)
+    key = str(info.get('private_key', '')).strip()
+    key = key.replace('\\r\\n', '\n').replace('\\n', '\n').replace('\r\n', '\n')
+    from cryptography.hazmat.primitives.serialization import load_pem_private_key
+    from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
+    try:
+        parsed = load_pem_private_key(key.encode(), password=None)
+        if not isinstance(parsed, RSAPrivateKey):
+            raise ValueError()
+    except (ValueError, TypeError) as error:
+        raise KeyFormatError('서비스 계정 키 내용이 올바르지 않습니다.') from error
+    info['private_key'] = key.rstrip() + '\n'
+    return info
+
+def clean_rows(rows):
+    cleaned = []
+    for row in rows:
+        row = list(row)
+        while len(row) > 4 and not row[-1].strip():
+            row.pop()
+        cleaned.append(row)
+    if cleaned:
+        cleaned[0] = [cell.strip().lstrip('\ufeff') for cell in cleaned[0]]
+    return cleaned
+
 class GoogleStore:
     def __init__(self, config):
-        creds = Credentials.from_service_account_info(dict(config['gcp_service_account']), scopes=['https://www.googleapis.com/auth/spreadsheets'])
-        self.book = gspread.authorize(creds).open_by_key(config['spreadsheet_id'])
+        creds = Credentials.from_service_account_info(service_account_info(config['gcp_service_account']), scopes=['https://www.googleapis.com/auth/spreadsheets'])
+        sheet_id = str(config['spreadsheet_id']).strip()
+        if '/spreadsheets/d/' in sheet_id:
+            sheet_id = sheet_id.split('/spreadsheets/d/', 1)[1].split('/', 1)[0]
+        client = gspread.authorize(creds)
+        client.set_timeout((10, 30))
+        self.book = client.open_by_key(sheet_id)
         self.lock = threading.RLock()
         try:
             self.sheet = self.book.worksheet('ledger_events_v1')
         except gspread.WorksheetNotFound:
             self.sheet = self.book.add_worksheet('ledger_events_v1', rows=2000, cols=4)
-        existing = self.sheet.get_all_values()
+        existing = clean_rows(self.sheet.get_all_values())
         if not existing:
             self.sheet.append_row(HEADER, value_input_option='RAW')
         elif existing[0] != HEADER:
-            raise ValueError('ledger_events_v1 탭의 형식이 다릅니다. 연결을 중단했습니다.')
+            raise SheetFormatError('ledger_events_v1 탭의 형식이 다릅니다. 연결을 중단했습니다.')
 
     def load(self):
-        rows = self.sheet.get_all_values()
+        rows = clean_rows(self.sheet.get_all_values())
         if not rows or rows[0] != HEADER:
-            raise ValueError('저장 탭의 제목 행을 확인해주세요.')
+            raise SheetFormatError('저장 탭의 제목 행을 확인해주세요.')
         events = [r for r in rows[1:] if any(r)]
-        records, plan = fold(events)
+        try:
+            records, plan = fold(events)
+            today = datetime.now(ZoneInfo('Asia/Seoul')).date()
+            for record in records:
+                if record['date'] > today.isoformat():
+                    raise ValueError('미래 날짜의 실제 상환 내역이 있습니다.')
+        except (ValueError, KeyError, TypeError) as error:
+            raise LedgerDataError('저장된 상환 내역 형식을 확인해주세요.') from error
         return records, plan, digest(events)
 
     def mutate(self, kind, data, expected, today):
@@ -43,8 +91,7 @@ class GoogleStore:
                 if data['id'] not in {r['id'] for r in records}:
                     raise ValueError('이미 삭제된 내역입니다.')
             elif kind == 'plan':
-                if set(data) != {'mother', 'me'} or any(type(v) is not int or v < 0 for v in data.values()):
-                    raise ValueError('월 상환 목표를 확인해주세요.')
+                validate_plan(data)
             else:
                 raise ValueError('지원하지 않는 작업입니다.')
             eid = str(uuid.uuid4())
