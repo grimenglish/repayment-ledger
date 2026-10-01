@@ -12,6 +12,7 @@ from storage import GoogleStore
 from hana_ui import render_hana
 from hana import hana_balance, hana_balances, hana_unallocated, monthly_interest
 from easy_ui import choose_person, repeat_button, amount_buttons, last_record
+from backup import backup_excel
 
 st.set_page_config(page_title='우리집 상환장부', page_icon='◔', layout='wide')
 st.markdown('''<style>
@@ -88,7 +89,7 @@ st.title('우리집 상환장부')
 st.caption('가족 상환장부 · 하나은행 대출을 탭별로 관리합니다.')
 try:
     store = connect()
-    records, plan, hana_records, revision = store.load_details()
+    records, plan, hana_records, revision, backup_status = store.load_details(include_backup=True)
 except Exception as error:
     st.error('Google Sheets 연결에 실패했습니다. 아래 점검 결과를 확인해주세요.')
     error_type = type(error).__name__
@@ -162,7 +163,7 @@ def gauge(label, left, original, color):
 
 
 
-def mutate(kind, data):
+def mutate(kind, data, message='Google Sheets에 저장했습니다.'):
     target=records if kind=='save' else hana_records
     previous=next((r for r in target if r['id']==data.get('id')),None) if kind in ('save','hana_save') else None
     try:
@@ -173,7 +174,9 @@ def mutate(kind, data):
     except Exception:
         st.error('저장 결과를 확인할 수 없습니다. 새로고침하여 내역을 확인한 뒤 다시 시도해주세요.')
         return
-    st.session_state['notice'] = 'Google Sheets에 저장했습니다.'
+    st.session_state['notice'] = message
+    if kind=='backup_confirm':
+        st.session_state.pop('backup_downloaded',None)
     if kind in ('save','hana_save'):
         st.session_state['last_save']={'kind':kind,'saved':dict(data),'previous':dict(previous) if previous else None}
     st.rerun()
@@ -184,6 +187,25 @@ def amount_input(container, label, value, step, key, maximum=MAX_AMOUNT, quick=F
     if quick:
         amount_buttons(container,key,maximum)
     return amount
+
+if backup_status['overdue']:
+    st.warning('상환장부 백업 시기가 되었습니다. 전체 장부를 엑셀로 내려받아 보관해주세요.')
+with st.expander('전체 장부 엑셀 백업',expanded=backup_status['overdue'] or bool(st.session_state.get('backup_downloaded'))):
+    if backup_status['last']:
+        st.caption(f'최근 백업 완료: {backup_status["last"]:%Y-%m-%d} · 다음 안내: {backup_status["due"]:%Y-%m-%d}')
+    elif backup_status['due']:
+        st.caption(f'백업 완료 기록이 없습니다. 연간 백업 안내 예정일: {backup_status["due"]:%Y-%m-%d}')
+    else:
+        st.caption('상환 기록이 생기면 1년 뒤부터 백업을 안내합니다.')
+    st.write('가족·하나은행 장부와 원본 이력을 한 파일에 담습니다. 다운로드 후 파일을 열어 기록을 확인하고 PC와 다른 저장 위치에 함께 보관하세요.')
+    if st.download_button('전체 장부 백업 엑셀 다운로드',backup_excel(records,plan,hana_records,backup_status['events'],today,revision),file_name=f'우리집_상환장부_전체백업_{today.isoformat()}.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',key='download_full_backup',on_click='rerun'):
+        st.session_state['backup_downloaded']={'revision':revision,'date':today.isoformat()}
+    if downloaded:=st.session_state.get('backup_downloaded'):
+        if downloaded != {'revision':revision,'date':today.isoformat()}:
+            st.info('기록이 변경되었거나 날짜가 지났습니다. 최신 파일을 다시 다운로드해주세요.')
+        elif st.button('백업 파일 저장 완료',key='confirm_full_backup'):
+            mutate('backup_confirm',downloaded,'백업 완료 날짜를 저장했습니다. 1년 후 다시 안내합니다.')
+    st.caption('파일 다운로드만으로 백업 완료를 표시하지 않습니다. 실제 저장과 확인을 마친 뒤 완료 버튼을 누르세요.')
 
 if pending:=st.session_state.get('last_save'):
     source='가족 대출' if pending['kind']=='save' else '하나은행'

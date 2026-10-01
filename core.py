@@ -67,6 +67,9 @@ def fold(events):
         elif kind in ('hana_save', 'hana_delete'):
             # 별도 대출의 이벤트는 가족 장부의 잔액과 계획에 반영하지 않는다.
             pass
+        elif kind == 'backup_confirm':
+            from backup import validate_backup
+            validate_backup(data,date.max)
         else:
             raise ValueError('알 수 없는 저장 이벤트입니다.')
     result = sorted(records.values(), key=lambda r: (r['date'], r['id']))

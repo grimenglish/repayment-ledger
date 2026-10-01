@@ -10,6 +10,7 @@ from streamlit.testing.v1 import AppTest
 from core import *
 from storage import GoogleStore, HEADER, service_account_info, clean_rows, KeyFormatError, LedgerDataError, SheetFormatError
 from hana import HANA_PRINCIPAL, HANA_SHARES, monthly_interest, repayment_fee, hana_balance, hana_balances, hana_unallocated, hana_excel
+from backup import backup_state, backup_excel, next_year
 TODAY=date(2026,10,1)
 def record(**kw):
     r=dict(id='a',date='2026-10-01',bank='국민',sender='본인',total=5_000_000,mother=4_000_000,me=1_000_000,interest=0,memo='')
@@ -31,6 +32,65 @@ class Sheet:
 def fake_store():
     s=GoogleStore.__new__(GoogleStore); s.sheet=Sheet(); s.lock=threading.RLock(); return s
 class Tests(unittest.TestCase):
+    def setUp(self):
+        import streamlit as st
+        st.cache_resource.clear()
+
+    def test_annual_backup_dates(self):
+        value=['e','2026-10-01T01:00:00+00:00','save',json.dumps(record())]
+        self.assertFalse(backup_state([value],date(2027,9,30))['overdue'])
+        self.assertTrue(backup_state([value],date(2027,10,1))['overdue'])
+        done=['b','2027-10-01T01:00:00+00:00','backup_confirm',json.dumps({'date':'2027-10-01','revision':'a'*64})]
+        status=backup_state([value,done],date(2027,10,1))
+        self.assertFalse(status['overdue'])
+        self.assertEqual(status['due'],date(2028,10,1))
+        self.assertEqual(next_year(date(2028,2,29)),date(2029,2,28))
+        self.assertIsNone(backup_state([],TODAY)['due'])
+
+    def test_full_backup_includes_replayable_events(self):
+        from hana import fold_hana
+        s=fake_store()
+        s.mutate('save',record(memo='=1+1'),s.load()[2],TODAY)
+        s.mutate('hana_save',bank_record(),s.load()[2],TODAY)
+        records,plan,bank,revision,state=s.load_details(include_backup=True)
+        wb=load_workbook(BytesIO(backup_excel(records,plan,bank,state['events'],TODAY,revision)))
+        self.assertEqual(len(wb.sheetnames),8)
+        self.assertEqual(wb['상환 내역']['I2'].data_type,'s')
+        self.assertEqual(wb['하나은행 상환 내역']['C2'].value,10_000_000)
+        events=[list(row) for row in wb['원본 이벤트 이력'].iter_rows(min_row=2,values_only=True)]
+        self.assertEqual(fold(events),(records,plan))
+        self.assertEqual(fold_hana(events),bank)
+
+    def test_backup_confirmation_keeps_records(self):
+        s=fake_store()
+        s.mutate('save',record(),s.load()[2],TODAY)
+        old=s.load_details(); revision=old[3]
+        with self.assertRaises(ValueError): s.mutate('backup_confirm',{'date':TODAY.isoformat(),'revision':'a'*64},revision,TODAY)
+        s.mutate('backup_confirm',{'date':TODAY.isoformat(),'revision':revision},revision,TODAY)
+        current=s.load_details(include_backup=True)
+        self.assertEqual(current[:3],old[:3])
+        self.assertEqual(current[4]['last'],TODAY)
+        self.assertEqual(current[4]['due'],date(2027,10,1))
+
+    def test_backup_ui_confirm_requires_current_snapshot(self):
+        import streamlit as st
+        st.cache_resource.clear(); s=fake_store()
+        with patch('storage.GoogleStore',return_value=s):
+            app=AppTest.from_file('app.py')
+            app.secrets['login']={'salt':'test','password_hash':'test'}
+            app.session_state['authenticated_until']=time.time()+1000
+            app.run()
+            self.assertNotIn('confirm_full_backup',[button.key for button in app.button])
+            app.session_state['backup_downloaded']={'revision':'a'*64,'date':TODAY.isoformat()}
+            app.run()
+            self.assertNotIn('confirm_full_backup',[button.key for button in app.button])
+            app.session_state['backup_downloaded']={'revision':s.load()[2],'date':TODAY.isoformat()}
+            app.run()
+            app.button(key='confirm_full_backup').click().run()
+            self.assertFalse(app.exception)
+            self.assertEqual(s.load_details(include_backup=True)[4]['last'],TODAY)
+            self.assertEqual(s.load_details()[0],[])
+
     def test_undo_new_and_edited_records(self):
         for kind,first,edited in [('save',record(),record(me=2_000_000,total=6_000_000)),('hana_save',bank_record(),bank_record(principal=5_000_000,fee=24_500))]:
             s=fake_store()

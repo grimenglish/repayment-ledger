@@ -7,6 +7,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 from core import fold, digest, validate, validate_plan
 from hana import fold_hana, validate_hana
+from backup import backup_state, validate_backup
 
 HEADER = ['event_id', 'timestamp', 'type', 'payload']
 
@@ -69,7 +70,7 @@ class GoogleStore:
         records, plan, hana_records, revision = self.load_details()
         return records, plan, revision
 
-    def load_details(self):
+    def load_details(self, include_backup=False):
         rows = clean_rows(self.sheet.get_all_values())
         if not rows or rows[0] != HEADER:
             raise SheetFormatError('저장 탭의 제목 행을 확인해주세요.')
@@ -81,9 +82,11 @@ class GoogleStore:
             for record in records + hana_records:
                 if record['date'] > today.isoformat():
                     raise ValueError('미래 날짜의 실제 상환 내역이 있습니다.')
+            state=backup_state(events,today)
         except (ValueError, KeyError, TypeError) as error:
             raise LedgerDataError('저장된 상환 내역 형식을 확인해주세요.') from error
-        return records, plan, hana_records, digest(events)
+        result=(records, plan, hana_records, digest(events))
+        return result+(state,) if include_backup else result
 
     def mutate(self, kind, data, expected, today):
         # 같은 앱 프로세스의 여러 브라우저에서 발생하는 동시 저장을 직렬화
@@ -103,6 +106,10 @@ class GoogleStore:
             elif kind == 'hana_delete':
                 if data['id'] not in {r['id'] for r in hana_records}:
                     raise ValueError('이미 삭제된 하나은행 내역입니다.')
+            elif kind == 'backup_confirm':
+                validate_backup(data,today)
+                if data['revision'] != expected or data['date'] != today.isoformat():
+                    raise ValueError('기록이 변경되었거나 날짜가 지났습니다. 최신 백업 파일을 다시 받아주세요.')
             else:
                 raise ValueError('지원하지 않는 작업입니다.')
             self._append(kind, data)
