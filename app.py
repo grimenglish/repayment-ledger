@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from core import PRINCIPAL, DEFAULT_PLAN, MAX_AMOUNT, amount_words, balances, month_paid, payoff, excel
+from core import PRINCIPAL, DEFAULT_PLAN, MAX_AMOUNT, amount_words, balances, month_paid, payoff, excel, relative_proof_excel
 from storage import GoogleStore
 from hana_ui import render_hana
 from girlfriend_ui import render_girlfriend
@@ -336,7 +336,10 @@ with history:
         st.caption(f'조회 합계: 원금 {sum(r["mother"]+r["me"] for r in selected):,}원 / 이자 {sum(r["interest"] for r in selected):,}원')
     else:
         st.info('아직 기록된 상환 내역이 없습니다.')
-    st.download_button('가족 장부 엑셀 다운로드', excel(records, plan, today), file_name=f'상환장부_{today.isoformat()}.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    st.download_button('친척 제출용 상환 내역서 다운로드', excel(records, plan, today), file_name=f'친척_상환내역서_v2_5_{today.isoformat()}.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    st.caption('날짜별 실제 송금 은행·금액·엄마/본인 상환액·남은 원금이 나옵니다. 은행 정보는 내역 수정에서 보완할 수 있습니다.')
+    st.download_button('친척 증명 엑셀 다운로드', relative_proof_excel(records), file_name=f'친척_상환증명_v2_6_{today.isoformat()}.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',key='download_relative_proof')
+    st.caption('친척 전달용: 엄마·본인 구분 없이 전체 날짜별 송금 내역이 나옵니다. 같은 날 여러 번 송금한 내역도 각각 표시됩니다.')
     if records:
         with st.expander('내역 수정 · 삭제',expanded=st.session_state.pop('open_family_editor',False)):
             ids = [r['id'] for r in records]

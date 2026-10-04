@@ -67,3 +67,41 @@ def add_transfer_sheet(workbook,title,groups):
     sheet.oddFooter.center.text='은행 이체확인증·거래내역과 함께 보관하세요.'
     workbook.active=0
     return sheet
+
+def add_family_statement(workbook,records,original_principal):
+    """친척에게 전달할 날짜별 실제 송금 내역. 같은 날짜의 여러 이체도 각각 유지한다."""
+    sheet=workbook.create_sheet('친척 상환 내역서',0)
+    sheet.append(['송금일','보낸 은행','실제 송금액','엄마 원금 상환','본인 원금 상환','납부 이자','상환 후 남은 원금','실제 송금자','메모','기록 ID'])
+    remaining=original_principal
+    ordered=sorted(records,key=lambda r:(r['date'],r['id']))
+    for r in ordered:
+        remaining-=r['mother']+r['me']
+        sheet.append([date.fromisoformat(r['date']),r.get('bank','').strip() or '은행 미입력',r['total'],r['mother'],r['me'],r['interest'],remaining,r.get('sender','').strip() or '송금자 미입력',r['memo'],r['id']])
+    # 합계와 마지막 잔액을 분리해 잔액을 합산하는 오류를 피한다.
+    sheet.append(['전체 합계','',sum(r['total'] for r in records),sum(r['mother'] for r in records),sum(r['me'] for r in records),sum(r['interest'] for r in records),remaining,'','',''])
+    last=sheet.max_row
+    widths=[19,18,21,21,21,18,25,19,35,25]
+    for i,width in enumerate(widths,1): sheet.column_dimensions[sheet.cell(1,i).column_letter].width=width
+    sheet.column_dimensions['J'].hidden=True
+    sheet.freeze_panes='C2'
+    sheet.auto_filter.ref=f'A1:I{len(ordered)+1}'
+    for row in sheet:
+        sheet.row_dimensions[row[0].row].height=34
+        for cell in row:
+            header=cell.row==1 or cell.row==last
+            cell.font=Font(name='맑은 고딕',size=11,bold=header,color='FFFFFF' if header else '17233D')
+            cell.fill=PatternFill('solid',fgColor='17233D' if header else 'F1F5FA' if cell.row%2==0 else 'FFFFFF')
+            cell.alignment=Alignment(vertical='center',wrap_text=True)
+            if isinstance(cell.value,str): cell.data_type='s'
+            if type(cell.value) is int: cell.number_format='#,##0"원"'
+        if row[0].row not in (1,last): row[0].number_format='yyyy"년" m"월" d"일"'
+    sheet.sheet_view.showGridLines=False
+    sheet.sheet_properties.pageSetUpPr.fitToPage=True
+    sheet.page_setup.orientation='landscape';sheet.page_setup.paperSize=sheet.PAPERSIZE_A4
+    sheet.page_setup.fitToWidth=1;sheet.page_setup.fitToHeight=0
+    sheet.page_margins=PageMargins(left=.25,right=.25,top=.4,bottom=.4,header=.2,footer=.2)
+    sheet.print_title_rows='1:1';sheet.print_area=f'A1:I{last}'
+    sheet.oddHeader.center.text='친척 대출 상환 내역서'
+    sheet.oddFooter.center.text='송금 기록 기준 · 은행 이체확인증과 함께 보관'
+    workbook.active=0
+    return sheet

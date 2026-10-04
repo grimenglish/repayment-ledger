@@ -47,17 +47,45 @@ class Tests(unittest.TestCase):
         records=[record(id='b',date='2026-10-04',bank='국민은행',sender='홍길동'),record(id='a',date='2026-10-01',bank='=1+1',memo='=NOW()')]
         wb=load_workbook(BytesIO(excel(records,DEFAULT_PLAN,UI_TODAY)))
         sheet=wb.active
-        self.assertEqual(sheet.title,'가족 송금 기록')
+        self.assertEqual(sheet.title,'친척 상환 내역서')
         self.assertEqual(sheet['A2'].value.date(),date(2026,10,1))
-        self.assertEqual(sheet['C3'].value,'국민은행')
-        self.assertEqual(sheet['D3'].value,5_000_000)
-        self.assertEqual(sheet['E3'].value,5_000_000)
-        self.assertIn('엄마 원금 4,000,000원',sheet['I3'].value)
-        self.assertEqual(sheet['C2'].data_type,'s')
-        self.assertEqual(sheet['J2'].data_type,'s')
-        self.assertTrue(sheet.column_dimensions['K'].hidden)
-        self.assertEqual(sheet.freeze_panes,'D2')
+        self.assertEqual(sheet['B3'].value,'국민은행')
+        self.assertEqual(sheet['C3'].value,5_000_000)
+        self.assertEqual(sheet['D3'].value,4_000_000)
+        self.assertEqual(sheet['E3'].value,1_000_000)
+        self.assertEqual(sheet['G3'].value,190_000_000)
+        self.assertEqual(sheet['B2'].data_type,'s')
+        self.assertEqual(sheet['I2'].data_type,'s')
+        self.assertTrue(sheet.column_dimensions['J'].hidden)
+        self.assertEqual(sheet.freeze_panes,'C2')
         self.assertEqual(wb['잔액 요약']['C2'].value,8_000_000)
+
+    def test_family_statement_separate_banks_interest_totals_and_empty(self):
+        rows=[record(id='b',bank='신협',date='2026-10-01',mother=0,me=2_000_000,interest=30_000,total=2_030_000),record(id='a',bank='카카오뱅크',date='2026-10-01')]
+        wb=load_workbook(BytesIO(excel(rows,DEFAULT_PLAN,TODAY)))
+        sheet=wb.active
+        self.assertEqual([sheet.cell(r,2).value for r in (2,3)],['카카오뱅크','신협'])
+        self.assertEqual([sheet.cell(r,7).value for r in (2,3)],[195_000_000,193_000_000])
+        self.assertEqual([sheet.cell(4,c).value for c in range(3,8)],[7_030_000,4_000_000,3_000_000,30_000,193_000_000])
+        self.assertEqual(sheet.auto_filter.ref,'A1:I3')
+        empty=load_workbook(BytesIO(excel([],DEFAULT_PLAN,TODAY))).active
+        self.assertEqual(empty['C2'].value,0)
+        self.assertEqual(empty['G2'].value,200_000_000)
+
+    def test_relative_proof_no_person_split_and_exact_transfers(self):
+        rows=[record(id='b',bank='신협',mother=0,me=2_000_000,interest=30_000,total=2_030_000),record(id='a',bank='카카오뱅크')]
+        wb=load_workbook(BytesIO(relative_proof_excel(rows)))
+        self.assertEqual(len(wb.sheetnames),1)
+        ws=wb.active
+        self.assertEqual([c.value for c in ws[1]],['송금일','보낸 은행','실제 송금액','누적 송금액','상환 후 남은 원금'])
+        self.assertEqual([ws.cell(3,c).value for c in range(2,6)],['신협',2_030_000,7_030_000,193_000_000])
+        self.assertEqual(ws['C4'].value,7_030_000)
+        self.assertEqual(ws['E4'].value,193_000_000)
+        self.assertEqual(ws.max_column,5)
+        self.assertEqual(ws.auto_filter.ref,'A1:E3')
+        empty=load_workbook(BytesIO(relative_proof_excel([]))).active
+        self.assertEqual(empty['D2'].value,0)
+        self.assertEqual(empty['E2'].value,200_000_000)
 
     def test_transfer_unknown_bank_and_estimated_fee_are_not_actual(self):
         records=[bank_record(),bank_record(id='b',date='2026-10-04',fee=12_345,fee_basis='actual',bank='신한은행',sender='홍길동')]

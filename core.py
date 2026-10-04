@@ -163,8 +163,39 @@ def excel(records, plan, today):
                     cell.data_type = 's'  # 외부 입력을 Excel 수식으로 실행하지 않음
                 if isinstance(cell.value, int):
                     cell.number_format = '#,##0'
-    from transfer_export import add_transfer_sheet
-    add_transfer_sheet(wb,'가족 송금 기록',[('save',records)])
+    from transfer_export import add_family_statement
+    add_family_statement(wb,records,PRINCIPAL*2)
     out = BytesIO()
     wb.save(out)
+    return out.getvalue()
+
+def relative_proof_excel(records):
+    """엄마/본인 배분을 공개하지 않는 친척 전달용 파일."""
+    from transfer_export import add_family_statement
+    wb=Workbook()
+    wb.remove(wb.active)
+    ws=add_family_statement(wb,records,PRINCIPAL*2)
+    ws.title='친척 상환 증명 내역'
+    # 공개 파일에는 날짜·은행·송금액·누적 송금액·잔액만 남긴다.
+    ws.delete_cols(8,3)
+    ws.delete_cols(4,3)
+    ws.insert_cols(4)
+    ws.cell(1,4,'누적 송금액')
+    running=0
+    for i,r in enumerate(sorted(records,key=lambda r:(r['date'],r['id'])),2):
+        running+=r['total']
+        ws.cell(i,4,running)
+    ws.cell(ws.max_row,4,running)
+    for row in ws:
+        source=row[2]
+        cell=row[3]
+        from copy import copy
+        cell._style=copy(source._style)
+    ws.column_dimensions.clear()
+    for name,width in zip('ABCDE',[21,24,25,25,27]): ws.column_dimensions[name].width=width
+    ws.auto_filter.ref=f'A1:E{len(records)+1}'
+    ws.print_area=f'A1:E{ws.max_row}'
+    ws.oddHeader.center.text='친척 대출 상환 내역'
+    ws.oddFooter.center.text='남은 원금은 원금 상환액 기준 · 은행 이체확인증과 함께 보관'
+    out=BytesIO();wb.save(out)
     return out.getvalue()
