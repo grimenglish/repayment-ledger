@@ -205,6 +205,7 @@ def history_cards(records, source, editor_key, open_key, key_prefix, bank=False)
                     st.write(f'송금 은행: {record["bank"]} · 송금자: {record["sender"]}')
                     st.write(f'총 송금액 **{record["total"]:,}원** · 이자 {record["interest"]:,}원')
                 else:
+                    st.write(f'송금·출금 은행: {record.get("bank","") or "은행 미입력"} · 송금자: {record.get("sender","") or "송금자 미입력"}')
                     st.write(f'상환 원금 **{record["principal"]:,}원** · 납부 이자 {record["interest"]:,}원')
                     st.write(f'수수료 {record["fee"]:,}원 · '+('실제' if record['fee_basis']=='actual' else '예상'))
                     if record['fee_basis']=='estimate': st.caption('이 기록의 예상 수수료율: '+estimate_fee_rate(record))

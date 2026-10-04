@@ -6,6 +6,7 @@ import json
 from openpyxl import Workbook
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from core import MAX_AMOUNT
+from transfer_export import validate_transfer_fields,add_transfer_sheet
 
 GF_PRINCIPAL=20_000_000
 GF_RATE=Decimal('0.03')
@@ -17,8 +18,10 @@ def gf_balance(records):
     return GF_PRINCIPAL-sum(r['principal'] for r in records)
 
 def validate_gf(record,records,today):
-    if not isinstance(record,dict) or set(record)!={'id','date','principal','interest','memo'}:
+    fields={'id','date','principal','interest','memo'}
+    if not isinstance(record,dict) or not fields.issubset(record) or set(record)-fields-{'bank','sender'}:
         raise ValueError('여자친구 상환 내역의 항목을 확인해주세요.')
+    validate_transfer_fields(record)
     for key in ('id','date','memo'):
         if not isinstance(record[key],str) or ILLEGAL_CHARACTERS_RE.search(record[key]):
             raise ValueError('글이나 특수문자를 확인해주세요.')
@@ -73,4 +76,5 @@ def gf_excel(records):
             for cell in column:
                 if isinstance(cell.value,str): cell.data_type='s'
                 if isinstance(cell.value,int): cell.number_format='#,##0'
+    add_transfer_sheet(wb,'여자친구 송금 기록',[('gf_save',records)])
     out=BytesIO(); wb.save(out); return out.getvalue()

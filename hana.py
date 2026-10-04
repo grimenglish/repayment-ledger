@@ -6,6 +6,7 @@ import json
 from openpyxl import Workbook
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from core import MAX_AMOUNT
+from transfer_export import validate_transfer_fields,add_transfer_sheet
 
 HANA_PRINCIPAL = 70_000_000
 HANA_SHARES = {'mother': 20_000_000, 'me': 50_000_000}
@@ -40,6 +41,7 @@ def validate_hana(record, records, today, allow_legacy=False,allow_historical=Fa
     fields = ('id', 'date', 'principal', 'interest', 'fee', 'fee_basis', 'memo')
     if not isinstance(record, dict) or any(field not in record for field in fields):
         raise ValueError('하나은행 상환 내역의 필수 항목이 없습니다.')
+    validate_transfer_fields(record)
     for field in ('id', 'date', 'fee_basis', 'memo'):
         if not isinstance(record[field], str) or ILLEGAL_CHARACTERS_RE.search(record[field]):
             raise ValueError('하나은행 상환 내역의 글이나 특수문자를 확인해주세요.')
@@ -138,6 +140,7 @@ def hana_excel(records):
             for cell in column:
                 if isinstance(cell.value,str): cell.data_type='s'
                 if isinstance(cell.value,int): cell.number_format='#,##0'
+    add_transfer_sheet(wb,'하나은행 납부 기록',[('hana_save',records)])
     output=BytesIO()
     wb.save(output)
     return output.getvalue()

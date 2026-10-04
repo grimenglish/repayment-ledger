@@ -8,6 +8,7 @@ from openpyxl import load_workbook
 from core import excel
 from hana import hana_excel
 from girlfriend import gf_excel,fold_gf
+from transfer_export import add_transfer_sheet
 
 def validate_backup(data, today):
     if not isinstance(data,dict) or set(data)!={'date','revision'}:
@@ -56,8 +57,17 @@ def backup_excel(records, plan, hana_records, events, today, revision):
                 if isinstance(cell.value,str): target.data_type='s'
         dest.freeze_panes=source.freeze_panes
         dest.auto_filter.ref=source.auto_filter.ref
+        dest.sheet_view.showGridLines=source.sheet_view.showGridLines
+        dest.page_setup=copy(source.page_setup)
+        dest.page_margins=copy(source.page_margins)
+        dest.sheet_properties=copy(source.sheet_properties)
+        dest.print_title_rows=source.print_title_rows
+        dest.print_area=source.print_area
+        dest.oddFooter.center.text=source.oddFooter.center.text
+        for number,dimension in source.row_dimensions.items(): dest.row_dimensions[number].height=dimension.height
         for name,dimension in source.column_dimensions.items():
             dest.column_dimensions[name].width=dimension.width
+            dest.column_dimensions[name].hidden=dimension.hidden
     meta=wb.create_sheet('백업 정보',0)
     for row in [('항목','내용'),('백업 파일 생성일',today.isoformat()),('가족 유효 기록 수',len(records)),('하나은행 유효 기록 수',len(hana_records)),('원본 이벤트 수',len(events)),('파일 기준 정보',revision),('보관 안내','이 파일을 PC와 다른 저장 위치에 함께 보관하세요. 원본 이벤트 이력도 포함되어 있습니다.'),('여자친구 유효 기록 수',len(gf_records))]:
         meta.append(row)
@@ -72,5 +82,6 @@ def backup_excel(records, plan, hana_records, events, today, revision):
         for row in sheet:
             for cell in row:
                 if isinstance(cell.value,str): cell.data_type='s'
+    add_transfer_sheet(wb,'전체 송금 기록',[('save',records),('hana_save',hana_records),('gf_save',gf_records)])
     out=BytesIO(); wb.save(out)
     return out.getvalue()

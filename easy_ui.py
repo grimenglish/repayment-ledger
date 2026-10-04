@@ -15,6 +15,16 @@ def choose_person(prefix, initial=None):
 def last_record(records):
     return max(records, key=lambda r:(r['date'],r['id'])) if records else None
 
+def transfer_inputs(prefix,label,records,initial=None):
+    previous=initial if initial else last_record(records) or {}
+    bank_default=previous.get('bank','') if initial else previous.get('bank',st.secrets.get('bank_name',''))
+    sender_default=previous.get('sender','') if initial else previous.get('sender',st.secrets.get('sender_name',''))
+    a,b=st.columns(2)
+    bank=a.text_input(label+' 송금·출금 은행',value=bank_default,placeholder='실제로 돈을 보낸 은행',key=prefix+'_bank')
+    sender=b.text_input(label+' 실제 송금자명',value=sender_default,placeholder='이체 내역에 표시된 이름',key=prefix+'_sender')
+    st.caption('대출받은 곳과 별개로 실제 돈을 보낸 은행 또는 상환금이 출금된 은행을 입력하세요. 다음 입력에는 최근 값을 채웁니다.')
+    return bank.strip(),sender.strip()
+
 def repeat_button(prefix, records, today, limits, bank=False):
     records=[r for r in records if not bank or 'mother' in r]
     last=last_record(records)
@@ -28,6 +38,8 @@ def repeat_button(prefix, records, today, limits, bank=False):
         st.session_state[prefix+'_person']=person_for(last)
         st.session_state[prefix+'_memo']=last['memo']
         if bank:
+            for field in ('bank','sender'):
+                st.session_state[prefix+'_'+field]=last.get(field,'')
             for field in ('mother_interest','me_interest'):
                 st.session_state[prefix+'_'+field]=last.get(field,0)
             st.session_state[prefix+'_actual']=last['fee_basis']=='actual' and not clipped

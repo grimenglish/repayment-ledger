@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 from girlfriend import GF_PRINCIPAL,gf_balance,gf_interest,gf_excel
 from design_ui import main_navigation
-from easy_ui import last_record
+from easy_ui import last_record,transfer_inputs
 
 def render_girlfriend(records,today,mutate,amount_input):
     left=gf_balance(records)
@@ -37,9 +37,11 @@ def render_girlfriend(records,today,mutate,amount_input):
                 st.session_state[prefix+'_principal']=min(previous['principal'],available)
                 st.session_state[prefix+'_interest']=previous['interest']
                 st.session_state[prefix+'_memo']=previous['memo']
+                for field in ('bank','sender'): st.session_state[prefix+'_'+field]=previous.get(field,'')
             st.button('여자친구 지난번과 동일하게',key=prefix+'_repeat',on_click=repeat,disabled=previous is None)
         with st.container(border=True):
             when=st.date_input('여자친구 상환일',value=date.fromisoformat(initial['date']) if initial else today,max_value=today,key=prefix+'_date')
+            bank,sender=transfer_inputs(prefix,'여자친구',records,initial)
             principal=amount_input(st,'여자친구 갚은 원금',initial.get('principal',0),100_000,prefix+'_principal',maximum=available,quick=True)
             def fill_all(): st.session_state[prefix+'_principal']=available
             st.button('여자친구 남은 원금 전액 채우기',key=prefix+'_all',on_click=fill_all,disabled=available==0)
@@ -50,8 +52,10 @@ def render_girlfriend(records,today,mutate,amount_input):
                 st.caption('이자를 실제로 지급했을 때만 입력하세요. 이자는 원금을 줄이지 않습니다.')
             st.metric('여자친구 총 납부액',f'{principal+interest:,}원')
             if st.button('여자친구 상환 저장',type='primary',key=prefix+'_save'):
-                data=dict(id=initial.get('id',str(uuid.uuid4())),date=when.isoformat(),principal=int(principal),interest=int(interest),memo=memo)
-                if not initial and any(all(r[key]==data[key] for key in ('date','principal','interest','memo')) for r in records):
+                data=dict(id=initial.get('id',str(uuid.uuid4())),date=when.isoformat(),principal=int(principal),interest=int(interest),memo=memo,bank=bank,sender=sender)
+                if not bank:
+                    st.error('실제 송금 은행을 입력해주세요.')
+                elif not initial and any(all(r.get(key,'')==data[key] for key in ('date','principal','interest','memo','bank','sender')) for r in records):
                     st.warning('동일한 여자친구 상환 내역이 있습니다. 내역 탭에서 확인해주세요.')
                 else:
                     mutate('gf_save',data)
@@ -70,6 +74,7 @@ def render_girlfriend(records,today,mutate,amount_input):
                     st.markdown(f'**{r["date"]} · 여자친구 대출**')
                     st.markdown(f'<span class="role-pill role-me">본인 {r["principal"]:,}원 상환</span>',unsafe_allow_html=True)
                     with st.expander('여자친구 상세 보기'):
+                        st.write(f'송금 은행: {r.get("bank","") or "은행 미입력"} · 송금자: {r.get("sender","") or "송금자 미입력"}')
                         st.write(f'실제 납부 이자 {r["interest"]:,}원 · 총 납부액 {r["principal"]+r["interest"]:,}원')
                         if r['memo']: st.write(r['memo'])
                         def edit(identifier=r['id']):

@@ -163,6 +163,8 @@ def excel(records, plan, today):
                     cell.data_type = 's'  # 외부 입력을 Excel 수식으로 실행하지 않음
                 if isinstance(cell.value, int):
                     cell.number_format = '#,##0'
+    from transfer_export import add_transfer_sheet
+    add_transfer_sheet(wb,'가족 송금 기록',[('save',records)])
     out = BytesIO()
     wb.save(out)
     return out.getvalue()

@@ -43,6 +43,91 @@ class Tests(unittest.TestCase):
         import streamlit as st
         st.cache_resource.clear()
 
+    def test_transfer_export_dates_banks_amounts_and_first_sheet(self):
+        records=[record(id='b',date='2026-10-04',bank='국민은행',sender='홍길동'),record(id='a',date='2026-10-01',bank='=1+1',memo='=NOW()')]
+        wb=load_workbook(BytesIO(excel(records,DEFAULT_PLAN,UI_TODAY)))
+        sheet=wb.active
+        self.assertEqual(sheet.title,'가족 송금 기록')
+        self.assertEqual(sheet['A2'].value.date(),date(2026,10,1))
+        self.assertEqual(sheet['C3'].value,'국민은행')
+        self.assertEqual(sheet['D3'].value,5_000_000)
+        self.assertEqual(sheet['E3'].value,5_000_000)
+        self.assertIn('엄마 원금 4,000,000원',sheet['I3'].value)
+        self.assertEqual(sheet['C2'].data_type,'s')
+        self.assertEqual(sheet['J2'].data_type,'s')
+        self.assertTrue(sheet.column_dimensions['K'].hidden)
+        self.assertEqual(sheet.freeze_panes,'D2')
+        self.assertEqual(wb['잔액 요약']['C2'].value,8_000_000)
+
+    def test_transfer_unknown_bank_and_estimated_fee_are_not_actual(self):
+        records=[bank_record(),bank_record(id='b',date='2026-10-04',fee=12_345,fee_basis='actual',bank='신한은행',sender='홍길동')]
+        wb=load_workbook(BytesIO(hana_excel(records)));sheet=wb.active
+        self.assertEqual(sheet.title,'하나은행 납부 기록')
+        self.assertEqual(sheet['C2'].value,'은행 미입력')
+        self.assertEqual(sheet['D2'].value,'수수료 미확인')
+        self.assertEqual(sheet['G2'].value,'미확인')
+        self.assertIn('예상 수수료 59,000원',sheet['I2'].value)
+        self.assertEqual(sheet['D3'].value,10_012_345)
+        self.assertEqual(sheet['C3'].value,'신한은행')
+        gf=load_workbook(BytesIO(gf_excel([girlfriend_record(bank='카카오뱅크',sender='홍길동')])))
+        self.assertEqual(gf.active.title,'여자친구 송금 기록')
+        self.assertEqual(gf.active['D2'].value,5_050_000)
+        self.assertEqual(gf.active['C2'].value,'카카오뱅크')
+
+    def test_transfer_metadata_validation_and_old_records(self):
+        s=fake_store()
+        old=girlfriend_record()
+        s.mutate('gf_save',old,s.load()[2],TODAY)
+        self.assertNotIn('bank',s.load_details(include_girlfriend=True)[4][0])
+        new=girlfriend_record(bank='우리은행',sender='홍길동')
+        s.mutate('gf_save',new,s.load()[2],TODAY)
+        self.assertEqual(s.load_details(include_girlfriend=True)[4],[new])
+        s.undo_save('gf_save',new,old,s.load()[2],TODAY)
+        self.assertEqual(s.load_details(include_girlfriend=True)[4],[old])
+        for kind,factory in [('gf_save',girlfriend_record),('hana_save',bank_record)]:
+            for changes in ({'bank':1},{'sender':'x\x00'},{'bank':'x'*101}):
+                with self.assertRaises(ValueError): s.mutate(kind,factory(**changes),s.load()[2],TODAY)
+
+    def test_combined_transfer_sheet_contains_each_payment(self):
+        s=fake_store()
+        s.mutate('save',record(bank='국민은행'),s.load()[2],TODAY)
+        s.mutate('hana_save',bank_record(bank='하나은행',fee_basis='actual',fee=12_345),s.load()[2],TODAY)
+        s.mutate('gf_save',girlfriend_record(bank='카카오뱅크'),s.load()[2],TODAY)
+        family,plan,bank,revision,gf,state=s.load_details(include_backup=True,include_girlfriend=True)
+        wb=load_workbook(BytesIO(backup_excel(family,plan,bank,state['events'],TODAY,revision)))
+        self.assertEqual(wb.active.title,'전체 송금 기록')
+        self.assertEqual(wb.active.max_row,4)
+        by_id={row[10]:row for row in wb.active.iter_rows(min_row=2,values_only=True)}
+        self.assertEqual(by_id['a'][3],5_000_000)
+        self.assertEqual(by_id['hana-a'][3],10_012_345)
+        self.assertEqual(by_id['gf-a'][2],'카카오뱅크')
+        self.assertEqual(len(wb.sheetnames),14)
+
+    def test_ui_transfer_bank_required_and_saved(self):
+        s=fake_store()
+        with patch('storage.GoogleStore',return_value=s):
+            app=AppTest.from_file('app.py')
+            app.secrets['login']={'salt':'test','password_hash':'test'}
+            app.session_state['authenticated_until']=time.time()+1000
+            app.run()
+            app.number_input(key='gf_new_principal').set_value(1_000_000).run()
+            app.button(key='gf_new_save').click().run()
+            self.assertTrue(app.error)
+            self.assertEqual(s.load_details(include_girlfriend=True)[4],[])
+            app.text_input(key='gf_new_bank').set_value('카카오뱅크')
+            app.text_input(key='gf_new_sender').set_value('홍길동')
+            app.button(key='gf_new_save').click().run()
+            self.assertFalse(app.exception)
+            self.assertEqual(s.load_details(include_girlfriend=True)[4][0]['bank'],'카카오뱅크')
+            app.number_input(key='hana_new_me').set_value(1_000_000).run()
+            app.button(key='hana_new_save').click().run()
+            self.assertEqual(s.load_details()[2],[])
+            app.text_input(key='hana_new_bank').set_value('우리은행')
+            app.text_input(key='hana_new_sender').set_value('홍길동')
+            app.button(key='hana_new_save').click().run()
+            self.assertFalse(app.exception)
+            self.assertEqual(s.load_details()[2][0]['bank'],'우리은행')
+
     def test_girlfriend_interest_and_validation(self):
         self.assertEqual(gf_interest(20_000_000),50_000)
         self.assertEqual(gf_interest(15_000_000),37_500)
@@ -135,10 +220,12 @@ class Tests(unittest.TestCase):
             app.button(key='card_me_gf').click().run()
             self.assertEqual(app.session_state['main_navigation'],'여자친구 대출')
             self.assertEqual(app.session_state['gf_navigation'],'여자친구 상환 입력')
+            app.text_input(key='gf_new_bank').set_value('국민은행')
             app.button(key='gf_new_save').click().run()
             self.assertTrue(app.error)
             app.number_input(key='gf_new_principal').set_value(5_000_000).run()
             app.number_input(key='gf_new_interest').set_value(50_000).run()
+            app.text_input(key='gf_new_bank').set_value('국민은행')
             app.button(key='gf_new_save').click().run()
             self.assertFalse(app.exception)
             gf=s.load_details(include_girlfriend=True)[4]
@@ -149,6 +236,7 @@ class Tests(unittest.TestCase):
             identifier=gf[0]['id']
             app.button(key='gf_history_edit_'+identifier).click().run()
             app.number_input(key='gf_edit_'+identifier+'_principal').set_value(10_000_000).run()
+            app.text_input(key='gf_edit_'+identifier+'_bank').set_value('국민은행')
             app.button(key='gf_edit_'+identifier+'_save').click().run()
             self.assertFalse(app.exception)
             self.assertEqual(gf_balance(s.load_details(include_girlfriend=True)[4]),10_000_000)
@@ -169,6 +257,7 @@ class Tests(unittest.TestCase):
             app.number_input(key='gf_simulation').set_value(20_000_000).run()
             self.assertEqual(s.load_details(include_girlfriend=True)[4],[])
             app.button(key='gf_new_all').click().run()
+            app.text_input(key='gf_new_bank').set_value('국민은행')
             app.button(key='gf_new_save').click().run()
             self.assertFalse(app.exception)
             self.assertEqual(gf_balance(s.load_details(include_girlfriend=True)[4]),0)
@@ -332,7 +421,7 @@ class Tests(unittest.TestCase):
         s.mutate('hana_save',bank_record(),s.load()[2],TODAY)
         records,plan,bank,revision,state=s.load_details(include_backup=True)
         wb=load_workbook(BytesIO(backup_excel(records,plan,bank,state['events'],TODAY,revision)))
-        self.assertEqual(len(wb.sheetnames),10)
+        self.assertEqual(len(wb.sheetnames),14)
         self.assertEqual(wb['상환 내역']['I2'].data_type,'s')
         self.assertEqual(wb['하나은행 상환 내역']['C2'].value,10_000_000)
         events=[list(row) for row in wb['원본 이벤트 이력'].iter_rows(min_row=2,values_only=True)]
@@ -447,6 +536,7 @@ class Tests(unittest.TestCase):
             self.assertEqual(app.number_input(key='hana_new_mother').value,10_000_000)
             app.button(key='hana_new_mother_plus1m').click().run()
             self.assertEqual(app.number_input(key='hana_new_mother').value,10_000_000)
+            app.text_input(key='hana_new_bank').set_value('국민은행')
             app.button(key='hana_new_save').click().run()
             self.assertFalse(app.exception)
             self.assertEqual(hana_balances(s.load_details()[2])['mother'],0)
@@ -512,6 +602,7 @@ class Tests(unittest.TestCase):
             app.number_input(key='hana_edit_hana-a_me').set_value(8_000_000)
             app.number_input(key='hana_edit_hana-a_mother_interest').set_value(50_000)
             app.number_input(key='hana_edit_hana-a_me_interest').set_value(150_000)
+            app.text_input(key='hana_edit_hana-a_bank').set_value('국민은행')
             app.button(key='hana_edit_hana-a_save').click().run()
             self.assertFalse(app.exception)
             self.assertEqual(len(s.load_details()[2]),1)
@@ -570,6 +661,7 @@ class Tests(unittest.TestCase):
             self.assertEqual(s.load_details()[2],[])
             app.number_input(key='hana_new_me').set_value(10_000_000).run()
             self.assertTrue(any(m.value=='59,000원' for m in app.metric))
+            app.text_input(key='hana_new_bank').set_value('국민은행')
             app.button(key='hana_new_save').click().run()
             self.assertFalse(app.exception)
             self.assertEqual(hana_balance(s.load_details()[2]),60_000_000)
@@ -577,6 +669,7 @@ class Tests(unittest.TestCase):
             self.assertTrue(any(m.value=='약 230,000원' for m in app.metric))
             record_id=s.load_details()[2][0]['id']
             app.number_input(key='hana_edit_'+record_id+'_me').set_value(5_000_000).run()
+            app.text_input(key='hana_edit_'+record_id+'_bank').set_value('국민은행')
             app.button(key='hana_edit_'+record_id+'_save').click().run()
             self.assertFalse(app.exception)
             self.assertEqual(hana_balance(s.load_details()[2]),65_000_000)
@@ -595,6 +688,7 @@ class Tests(unittest.TestCase):
             app.run()
             app.number_input(key='hana_new_mother').set_value(20_000_000)
             app.number_input(key='hana_new_me').set_value(50_000_000).run()
+            app.text_input(key='hana_new_bank').set_value('국민은행')
             app.button(key='hana_new_save').click().run()
             self.assertFalse(app.exception)
             self.assertEqual(hana_balance(s.load_details()[2]),0)

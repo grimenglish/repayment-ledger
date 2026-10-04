@@ -210,6 +210,7 @@ with st.expander('전체 장부 엑셀 백업',expanded=backup_status['overdue']
         elif st.button('백업 파일 저장 완료',key='confirm_full_backup'):
             mutate('backup_confirm',downloaded,'백업 완료 날짜를 저장했습니다. 1년 후 다시 안내합니다.')
     st.caption('파일 다운로드만으로 백업 완료를 표시하지 않습니다. 실제 저장과 확인을 마친 뒤 완료 버튼을 누르세요.')
+    st.caption('엑셀 첫 시트에서 날짜·송금 은행·금액을 확인할 수 있습니다. 은행 이체확인증·거래내역도 함께 보관하세요.')
 
 if pending:=st.session_state.get('last_save'):
     source=loan_name(pending['kind'])

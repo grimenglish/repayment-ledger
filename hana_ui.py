@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 from core import amount_words, MAX_AMOUNT
 from hana import HANA_PRINCIPAL, HANA_SHARES, hana_balance, hana_balances, hana_unallocated, monthly_interest, repayment_fee, hana_excel,estimate_fee_rate
-from easy_ui import choose_person, repeat_button
+from easy_ui import choose_person, repeat_button,transfer_inputs
 from design_ui import MOTHER_COLOR, ME_COLOR, history_cards, main_navigation
 
 def render_hana(records, today, mutate, gauge, amount_input):
@@ -61,6 +61,7 @@ def render_hana(records, today, mutate, gauge, amount_input):
         with st.container(border=True):
             person=choose_person(prefix,initial)
             when=st.date_input('하나은행 상환일',value=date.fromisoformat(initial['date']) if initial else today,max_value=today,key=prefix+'_date')
+            bank,sender=transfer_inputs(prefix,'하나은행',records,initial)
             if initial and 'mother' not in initial:
                 st.info(f'이전 기록: 원금 {initial["principal"]:,}원, 납부 이자 {initial["interest"]:,}원. 엄마·본인 몫으로 나눠 입력해주세요.')
             a,b=st.columns(2) if person=='함께' else (st,st)
@@ -91,10 +92,12 @@ def render_hana(records, today, mutate, gauge, amount_input):
             st.markdown(f'**저장 전 확인: 엄마 {mother:,}원 · 본인 {me:,}원 원금 상환**')
             st.caption('실제로 상환한 내역만 저장하세요. 앞으로 갚을 금액은 ‘상환 미리 계산’에서 확인할 수 있습니다.')
             if st.button('하나은행 상환 저장',type='primary',key=prefix+'_save'):
-                data=dict(id=initial.get('id',str(uuid.uuid4())),date=when.isoformat(),principal=int(principal),mother=int(mother),me=int(me),interest=int(interest),mother_interest=int(mother_interest),me_interest=int(me_interest),fee=int(fee),fee_basis='actual' if actual else 'estimate',fee_rate='0.59%',memo=memo)
-                if initial and 'mother' not in initial and (principal!=initial['principal'] or interest!=initial['interest']):
+                data=dict(id=initial.get('id',str(uuid.uuid4())),date=when.isoformat(),principal=int(principal),mother=int(mother),me=int(me),interest=int(interest),mother_interest=int(mother_interest),me_interest=int(me_interest),fee=int(fee),fee_basis='actual' if actual else 'estimate',fee_rate='0.59%',bank=bank,sender=sender,memo=memo)
+                if not bank:
+                    st.error('실제 송금·출금 은행을 입력해주세요.')
+                elif initial and 'mother' not in initial and (principal!=initial['principal'] or interest!=initial['interest']):
                     st.error('배분을 확인할 때는 이전 원금·납부 이자 합계를 유지해주세요.')
-                elif not initial and any(all(r.get(k)==data[k] for k in ('date','mother','me','mother_interest','me_interest','fee','fee_basis','memo')) for r in records):
+                elif not initial and any(all(r.get(k,'')==data[k] for k in ('date','mother','me','mother_interest','me_interest','fee','fee_basis','memo','bank','sender')) for r in records):
                     st.warning('동일한 하나은행 내역이 있습니다. 내역 탭에서 확인해주세요.')
                 else:
                     mutate('hana_save',data)
@@ -116,6 +119,8 @@ def render_hana(records, today, mutate, gauge, amount_input):
                 rows.append({'상환일':record['date'],'갚은 원금':record['principal'],'실제 납부 이자':record['interest'],'상환수수료':record['fee'],'수수료 구분':'실제' if record['fee_basis']=='actual' else '예상','상환 후 잔액':balance,'상환 후 예상 월 이자':monthly_interest(balance),'월 이자 감소액':monthly_interest(record['principal']),'메모':record['memo']})
                 rows[-1].update({'엄마 원금':record.get('mother','배분 확인 필요'),'본인 원금':record.get('me','배분 확인 필요'),'엄마 납부 이자':record.get('mother_interest','배분 확인 필요'),'본인 납부 이자':record.get('me_interest','배분 확인 필요')})
                 rows[-1]['예상 적용 수수료율']=estimate_fee_rate(record)
+                rows[-1]['송금·출금 은행']=record.get('bank','') or '은행 미입력'
+                rows[-1]['실제 송금자']=record.get('sender','') or '송금자 미입력'
         if rows:
             selected=[r for r in records if month=='전체' or r['date'][:7]==month]
             history_cards(selected,'하나은행','hana_edit_select','open_hana_editor','hana_history',bank=True)
