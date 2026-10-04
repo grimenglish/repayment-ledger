@@ -2,7 +2,8 @@ import unittest
 import json
 import time
 import threading
-from datetime import date
+from datetime import date,datetime
+from zoneinfo import ZoneInfo
 from io import BytesIO
 from unittest.mock import patch, MagicMock
 from openpyxl import load_workbook
@@ -11,13 +12,15 @@ from core import *
 from storage import GoogleStore, HEADER, service_account_info, clean_rows, KeyFormatError, LedgerDataError, SheetFormatError
 from hana import HANA_PRINCIPAL, HANA_SHARES, monthly_interest, repayment_fee, hana_balance, hana_balances, hana_unallocated, hana_excel
 from backup import backup_state, backup_excel, next_year
+from girlfriend import GF_PRINCIPAL,gf_interest,gf_balance,validate_gf,fold_gf,gf_excel
 TODAY=date(2026,10,1)
+UI_TODAY=datetime.now(ZoneInfo('Asia/Seoul')).date()
 def record(**kw):
     r=dict(id='a',date='2026-10-01',bank='국민',sender='본인',total=5_000_000,mother=4_000_000,me=1_000_000,interest=0,memo='')
     r.update(kw)
     return r
 def bank_record(**kw):
-    r=dict(id='hana-a',date='2026-10-01',principal=10_000_000,interest=0,fee=49_000,fee_basis='estimate',memo='')
+    r=dict(id='hana-a',date='2026-10-01',principal=10_000_000,interest=0,fee=59_000,fee_basis='estimate',memo='')
     r.update(kw)
     r.setdefault('mother',0)
     r.setdefault('me',r['principal']-r['mother'])
@@ -31,10 +34,151 @@ class Sheet:
     def col_values(self,col): return [r[col-1] for r in self.rows]
 def fake_store():
     s=GoogleStore.__new__(GoogleStore); s.sheet=Sheet(); s.lock=threading.RLock(); return s
+
+def girlfriend_record(**kw):
+    r=dict(id='gf-a',date='2026-10-01',principal=5_000_000,interest=50_000,memo='')
+    r.update(kw);return r
 class Tests(unittest.TestCase):
     def setUp(self):
         import streamlit as st
         st.cache_resource.clear()
+
+    def test_girlfriend_interest_and_validation(self):
+        self.assertEqual(gf_interest(20_000_000),50_000)
+        self.assertEqual(gf_interest(15_000_000),37_500)
+        self.assertEqual(gf_interest(18_000_000),45_000)
+        self.assertEqual(gf_interest(200),1)
+        self.assertEqual(gf_interest(0),0)
+        validate_gf(girlfriend_record(),[],TODAY)
+        validate_gf(girlfriend_record(principal=0),[],TODAY)
+        for invalid in (girlfriend_record(principal=20_000_001),girlfriend_record(principal=True),girlfriend_record(interest=-1),girlfriend_record(principal=0,interest=0),girlfriend_record(date='2026-10-02'),girlfriend_record(date='2026-1-1'),girlfriend_record(memo='x\x00'),girlfriend_record(principal=1.5),girlfriend_record(interest=MAX_AMOUNT)):
+            with self.assertRaises(ValueError): validate_gf(invalid,[],TODAY)
+
+    def test_girlfriend_save_edit_delete_and_isolation(self):
+        s=fake_store()
+        s.mutate('save',record(),s.load()[2],TODAY)
+        s.mutate('hana_save',bank_record(),s.load()[2],TODAY)
+        before=s.load_details()
+        first=girlfriend_record()
+        s.mutate('gf_save',first,before[3],TODAY)
+        self.assertEqual(s.load_details()[:3],before[:3])
+        self.assertEqual(gf_balance(s.load_details(include_girlfriend=True)[4]),15_000_000)
+        s.mutate('gf_save',girlfriend_record(principal=10_000_000),s.load()[2],TODAY)
+        self.assertEqual(gf_balance(s.load_details(include_girlfriend=True)[4]),10_000_000)
+        with self.assertRaises(ValueError): s.mutate('gf_save',girlfriend_record(id='gf-b',principal=10_000_001),s.load()[2],TODAY)
+        s.mutate('gf_delete',{'id':first['id']},s.load()[2],TODAY)
+        self.assertEqual(s.load_details(include_girlfriend=True)[4],[])
+        self.assertEqual(s.load_details()[:3],before[:3])
+
+    def test_girlfriend_undo_and_conflict(self):
+        s=fake_store();saved=girlfriend_record()
+        s.mutate('gf_save',saved,s.load()[2],TODAY)
+        old_revision=s.load()[2]
+        edited=girlfriend_record(principal=10_000_000)
+        s.mutate('gf_save',edited,old_revision,TODAY)
+        with self.assertRaises(ValueError): s.undo_save('gf_save',saved,None,old_revision,TODAY)
+        s.undo_save('gf_save',edited,saved,s.load()[2],TODAY)
+        self.assertEqual(s.load_details(include_girlfriend=True)[4],[saved])
+        s.undo_save('gf_save',saved,None,s.load()[2],TODAY)
+        self.assertEqual(s.load_details(include_girlfriend=True)[4],[])
+
+    def test_girlfriend_backup_and_event_replay(self):
+        s=fake_store();saved=girlfriend_record(memo='=1+1')
+        s.mutate('gf_save',saved,s.load()[2],TODAY)
+        records,plan,bank,revision,gf,state=s.load_details(include_backup=True,include_girlfriend=True)
+        wb=load_workbook(BytesIO(backup_excel(records,plan,bank,state['events'],TODAY,revision)))
+        self.assertEqual(wb['여자친구 상환 내역']['C2'].value,5_000_000)
+        self.assertEqual(wb['여자친구 상환 내역']['H2'].data_type,'s')
+        events=[list(row) for row in wb['원본 이벤트 이력'].iter_rows(min_row=2,values_only=True)]
+        self.assertEqual(fold_gf(events),gf)
+        timestamp=state['events'][0][1]
+        from datetime import datetime
+        began=datetime.fromisoformat(timestamp).astimezone(ZoneInfo('Asia/Seoul')).date()
+        self.assertEqual(state['start'],began)
+        wb=load_workbook(BytesIO(gf_excel(gf)))
+        self.assertEqual(wb['여자친구 대출 요약']['B6'].value,37_500)
+
+    def test_girlfriend_corrupt_cumulative_records(self):
+        s=fake_store()
+        for i in range(2):
+            s.sheet.rows.append([str(i),'2026-10-01T00:00:00+00:00','gf_save',json.dumps(girlfriend_record(id=str(i),principal=15_000_000))])
+        with self.assertRaises(LedgerDataError): s.load_details()
+
+    def test_hana_historical_fees_preserved_and_new_rate_enforced(self):
+        from hana import estimate_fee_rate
+        s=fake_store();old=bank_record(fee=49_000)
+        s.sheet.rows.append(['old','2026-10-01T00:00:00+00:00','hana_save',json.dumps(old)])
+        self.assertEqual(s.load_details()[2],[old])
+        self.assertEqual(estimate_fee_rate(old),'0.49%')
+        with self.assertRaises(ValueError): s.mutate('hana_save',bank_record(id='new',fee=49_000),s.load()[2],TODAY)
+        updated=bank_record(fee_rate='0.59%')
+        s.mutate('hana_save',updated,s.load()[2],TODAY)
+        self.assertEqual(s.load_details()[2],[updated])
+        s.undo_save('hana_save',updated,old,s.load()[2],TODAY)
+        self.assertEqual(s.load_details()[2],[old])
+        wb=load_workbook(BytesIO(hana_excel([old])))
+        self.assertEqual(wb['하나은행 상환 내역']['E2'].value,49_000)
+        self.assertEqual(wb['하나은행 상환 내역']['L2'].value,'0.49%')
+        actual=bank_record(fee=12_345,fee_basis='actual')
+        s.mutate('hana_save',actual,s.load()[2],TODAY)
+        self.assertEqual(s.load_details()[2][0]['fee'],12_345)
+
+    def test_girlfriend_ui_save_edit_delete_and_undo(self):
+        s=fake_store()
+        with patch('storage.GoogleStore',return_value=s):
+            app=AppTest.from_file('app.py')
+            app.secrets['login']={'salt':'test','password_hash':'test'}
+            app.session_state['authenticated_until']=time.time()+1000
+            app.run()
+            self.assertFalse(app.exception)
+            self.assertTrue(any(m.label=='내 남은 대출' and m.value=='170,000,000원' for m in app.metric))
+            app.button(key='card_me_gf').click().run()
+            self.assertEqual(app.session_state['main_navigation'],'여자친구 대출')
+            self.assertEqual(app.session_state['gf_navigation'],'여자친구 상환 입력')
+            app.button(key='gf_new_save').click().run()
+            self.assertTrue(app.error)
+            app.number_input(key='gf_new_principal').set_value(5_000_000).run()
+            app.number_input(key='gf_new_interest').set_value(50_000).run()
+            app.button(key='gf_new_save').click().run()
+            self.assertFalse(app.exception)
+            gf=s.load_details(include_girlfriend=True)[4]
+            self.assertEqual(len(gf),1)
+            self.assertEqual(gf_balance(gf),15_000_000)
+            self.assertTrue(any('약 12,500원 감소' in m.value for m in app.markdown))
+            self.assertTrue(any(m.label=='내 남은 대출' and m.value=='165,000,000원' for m in app.metric))
+            identifier=gf[0]['id']
+            app.button(key='gf_history_edit_'+identifier).click().run()
+            app.number_input(key='gf_edit_'+identifier+'_principal').set_value(10_000_000).run()
+            app.button(key='gf_edit_'+identifier+'_save').click().run()
+            self.assertFalse(app.exception)
+            self.assertEqual(gf_balance(s.load_details(include_girlfriend=True)[4]),10_000_000)
+            app.button(key='undo_last_save').click().run()
+            self.assertEqual(gf_balance(s.load_details(include_girlfriend=True)[4]),15_000_000)
+            app.checkbox(key='gf_confirm_'+identifier).set_value(True).run()
+            app.button(key='gf_delete_'+identifier).click().run()
+            self.assertFalse(app.exception)
+            self.assertEqual(s.load_details(include_girlfriend=True)[4],[])
+
+    def test_girlfriend_simulation_full_payment_and_reload(self):
+        s=fake_store()
+        with patch('storage.GoogleStore',return_value=s):
+            app=AppTest.from_file('app.py')
+            app.secrets['login']={'salt':'test','password_hash':'test'}
+            app.session_state['authenticated_until']=time.time()+1000
+            app.run()
+            app.number_input(key='gf_simulation').set_value(20_000_000).run()
+            self.assertEqual(s.load_details(include_girlfriend=True)[4],[])
+            app.button(key='gf_new_all').click().run()
+            app.button(key='gf_new_save').click().run()
+            self.assertFalse(app.exception)
+            self.assertEqual(gf_balance(s.load_details(include_girlfriend=True)[4]),0)
+            self.assertTrue(any('여자친구 대출 완납' in m.value for m in app.markdown))
+            reloaded=AppTest.from_file('app.py')
+            reloaded.secrets['login']={'salt':'test','password_hash':'test'}
+            reloaded.session_state['authenticated_until']=time.time()+1000
+            reloaded.run()
+            self.assertFalse(reloaded.exception)
+            self.assertTrue(reloaded.button(key='card_me_gf').disabled)
 
     def test_monthly_goal_states(self):
         from design_ui import monthly_goal
@@ -188,7 +332,7 @@ class Tests(unittest.TestCase):
         s.mutate('hana_save',bank_record(),s.load()[2],TODAY)
         records,plan,bank,revision,state=s.load_details(include_backup=True)
         wb=load_workbook(BytesIO(backup_excel(records,plan,bank,state['events'],TODAY,revision)))
-        self.assertEqual(len(wb.sheetnames),8)
+        self.assertEqual(len(wb.sheetnames),10)
         self.assertEqual(wb['상환 내역']['I2'].data_type,'s')
         self.assertEqual(wb['하나은행 상환 내역']['C2'].value,10_000_000)
         events=[list(row) for row in wb['원본 이벤트 이력'].iter_rows(min_row=2,values_only=True)]
@@ -215,18 +359,18 @@ class Tests(unittest.TestCase):
             app.session_state['authenticated_until']=time.time()+1000
             app.run()
             self.assertNotIn('confirm_full_backup',[button.key for button in app.button])
-            app.session_state['backup_downloaded']={'revision':'a'*64,'date':TODAY.isoformat()}
+            app.session_state['backup_downloaded']={'revision':'a'*64,'date':UI_TODAY.isoformat()}
             app.run()
             self.assertNotIn('confirm_full_backup',[button.key for button in app.button])
-            app.session_state['backup_downloaded']={'revision':s.load()[2],'date':TODAY.isoformat()}
+            app.session_state['backup_downloaded']={'revision':s.load()[2],'date':UI_TODAY.isoformat()}
             app.run()
             app.button(key='confirm_full_backup').click().run()
             self.assertFalse(app.exception)
-            self.assertEqual(s.load_details(include_backup=True)[4]['last'],TODAY)
+            self.assertEqual(s.load_details(include_backup=True)[4]['last'],UI_TODAY)
             self.assertEqual(s.load_details()[0],[])
 
     def test_undo_new_and_edited_records(self):
-        for kind,first,edited in [('save',record(),record(me=2_000_000,total=6_000_000)),('hana_save',bank_record(),bank_record(principal=5_000_000,fee=24_500))]:
+        for kind,first,edited in [('save',record(),record(me=2_000_000,total=6_000_000)),('hana_save',bank_record(),bank_record(principal=5_000_000,fee=29_500))]:
             s=fake_store()
             s.mutate(kind,first,s.load()[2],TODAY)
             s.undo_save(kind,first,None,s.load()[2],TODAY)
@@ -264,13 +408,13 @@ class Tests(unittest.TestCase):
             app.secrets['login']={'salt':'test','password_hash':'test'}
             app.session_state['authenticated_until']=time.time()+1000
             app.run()
-            self.assertTrue(any(m.label=='내 남은 대출' and m.value=='149,000,000원' for m in app.metric))
+            self.assertTrue(any(m.label=='내 남은 대출' and m.value=='169,000,000원' for m in app.metric))
             app.button(key='new_manual_repeat').click().run()
             self.assertFalse(app.exception)
             self.assertEqual(app.radio(key='new_manual_person').value,'본인만')
             self.assertNotIn('new_manual_mother',[widget.key for widget in app.number_input])
             self.assertEqual(app.number_input(key='new_manual_me').value,1_000_000)
-            self.assertEqual(app.date_input(key='new_manual_date').value,TODAY)
+            self.assertEqual(app.date_input(key='new_manual_date').value,UI_TODAY)
             app.button(key='new_manual_me_plus100k').click().run()
             self.assertEqual(app.number_input(key='new_manual_me').value,1_100_000)
             app.button(key='new_manual_me_plus1m').click().run()
@@ -313,7 +457,7 @@ class Tests(unittest.TestCase):
     def test_repeat_limits_remaining_principal(self):
         import streamlit as st
         st.cache_resource.clear(); s=fake_store()
-        s.mutate('hana_save',bank_record(mother=15_000_000,me=0,principal=15_000_000,fee=73_500),s.load()[2],TODAY)
+        s.mutate('hana_save',bank_record(mother=15_000_000,me=0,principal=15_000_000,fee=88_500),s.load()[2],TODAY)
         with patch('storage.GoogleStore',return_value=s):
             app=AppTest.from_file('app.py')
             app.secrets['login']={'salt':'test','password_hash':'test'}
@@ -329,16 +473,16 @@ class Tests(unittest.TestCase):
         self.assertEqual(hana_balances([]),HANA_SHARES)
         self.assertEqual(monthly_interest(20_000_000),76_667)
         self.assertEqual(monthly_interest(50_000_000),191_667)
-        s.mutate('hana_save',bank_record(principal=5_000_000,mother=5_000_000,fee=24_500),s.load()[2],TODAY)
+        s.mutate('hana_save',bank_record(principal=5_000_000,mother=5_000_000,fee=29_500),s.load()[2],TODAY)
         self.assertEqual(hana_balances(s.load_details()[2]),{'mother':15_000_000,'me':50_000_000})
-        s.mutate('hana_save',bank_record(id='b',principal=10_000_000,mother=0,fee=49_000),s.load()[2],TODAY)
+        s.mutate('hana_save',bank_record(id='b',principal=10_000_000,mother=0,fee=59_000),s.load()[2],TODAY)
         self.assertEqual(hana_balances(s.load_details()[2]),{'mother':15_000_000,'me':40_000_000})
         self.assertEqual(monthly_interest(hana_balances(s.load_details()[2])['mother']),57_500)
         self.assertEqual(monthly_interest(hana_balances(s.load_details()[2])['me']),153_333)
 
     def test_hana_split_validation(self):
         s=fake_store()
-        for value in (bank_record(mother=11_000_000,me=0),bank_record(principal=21_000_000,mother=21_000_000,fee=102_900),bank_record(principal=51_000_000,fee=249_900),bank_record(mother_interest=1,me_interest=0),bank_record(mother=True)):
+        for value in (bank_record(mother=11_000_000,me=0),bank_record(principal=21_000_000,mother=21_000_000,fee=123_900),bank_record(principal=51_000_000,fee=300_900),bank_record(mother_interest=1,me_interest=0),bank_record(mother=True)):
             with self.assertRaises(ValueError): s.mutate('hana_save',value,s.load()[2],TODAY)
 
     def test_hana_legacy_preserved_and_allocated(self):
@@ -378,9 +522,9 @@ class Tests(unittest.TestCase):
         self.assertEqual(monthly_interest(70_000_000),268_333)
         self.assertEqual(monthly_interest(60_000_000),230_000)
         self.assertEqual(monthly_interest(10_000_000),38_333)
-        self.assertEqual(repayment_fee(10_000_000),49_000)
-        self.assertEqual(repayment_fee(20_000_000),98_000)
-        self.assertEqual(repayment_fee(70_000_000),343_000)
+        self.assertEqual(repayment_fee(10_000_000),59_000)
+        self.assertEqual(repayment_fee(20_000_000),118_000)
+        self.assertEqual(repayment_fee(70_000_000),413_000)
         self.assertEqual(monthly_interest(0),0)
 
     def test_hana_save_edit_delete_isolation(self):
@@ -390,7 +534,7 @@ class Tests(unittest.TestCase):
         current_family,current_plan,bank,revision=s.load_details()
         self.assertEqual((family,plan),(current_family,current_plan))
         self.assertEqual(hana_balance(bank),60_000_000)
-        s.mutate('hana_save',bank_record(principal=20_000_000,fee=98_000),revision,TODAY)
+        s.mutate('hana_save',bank_record(principal=20_000_000,fee=118_000),revision,TODAY)
         self.assertEqual(hana_balance(s.load_details()[2]),50_000_000)
         s.mutate('hana_delete',{'id':'hana-a'},s.load()[2],TODAY)
         self.assertEqual(s.load_details()[2],[])
@@ -398,10 +542,10 @@ class Tests(unittest.TestCase):
 
     def test_hana_invalid_and_overpayment(self):
         s=fake_store()
-        for invalid in (bank_record(principal=80_000_000,fee=392_000),bank_record(fee=-1),bank_record(fee=1),bank_record(principal=True),bank_record(date='2026-10-02'),bank_record(memo='bad\x00')):
+        for invalid in (bank_record(principal=80_000_000,fee=472_000),bank_record(fee=-1),bank_record(fee=1),bank_record(principal=True),bank_record(date='2026-10-02'),bank_record(memo='bad\x00')):
             with self.assertRaises(ValueError): s.mutate('hana_save',invalid,s.load()[2],TODAY)
-        s.mutate('hana_save',bank_record(principal=60_000_000,mother=20_000_000,fee=294_000),s.load()[2],TODAY)
-        with self.assertRaises(ValueError): s.mutate('hana_save',bank_record(id='b',principal=20_000_000,fee=98_000),s.load()[2],TODAY)
+        s.mutate('hana_save',bank_record(principal=60_000_000,mother=20_000_000,fee=354_000),s.load()[2],TODAY)
+        with self.assertRaises(ValueError): s.mutate('hana_save',bank_record(id='b',principal=20_000_000,fee=118_000),s.load()[2],TODAY)
         self.assertEqual(hana_balance(s.load_details()[2]),10_000_000)
 
     def test_hana_actual_costs_and_excel(self):
@@ -425,7 +569,7 @@ class Tests(unittest.TestCase):
             app.number_input(key='hana_simulation_me').set_value(20_000_000).run()
             self.assertEqual(s.load_details()[2],[])
             app.number_input(key='hana_new_me').set_value(10_000_000).run()
-            self.assertTrue(any(m.value=='49,000원' for m in app.metric))
+            self.assertTrue(any(m.value=='59,000원' for m in app.metric))
             app.button(key='hana_new_save').click().run()
             self.assertFalse(app.exception)
             self.assertEqual(hana_balance(s.load_details()[2]),60_000_000)
@@ -520,7 +664,7 @@ class Tests(unittest.TestCase):
             app.secrets['auth']={'google':{}}
             app.run()
             self.assertFalse(app.exception)
-            self.assertEqual(len(app.tabs),8)
+            self.assertEqual(len(app.tabs),12)
             connection.assert_called_once()
 
     def test_paid_dashboard_with_zero_plan(self):
@@ -709,7 +853,7 @@ class Tests(unittest.TestCase):
             app.run()
             self.assertFalse(app.exception)
             self.assertEqual(len(app.get('plotly_chart')),6)
-            self.assertEqual(len(app.tabs),8)
+            self.assertEqual(len(app.tabs),12)
             for b in app.button:
                 if b.label=='확인한 금액 저장': b.click(); break
             app.run()

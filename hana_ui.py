@@ -3,7 +3,7 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 from core import amount_words, MAX_AMOUNT
-from hana import HANA_PRINCIPAL, HANA_SHARES, hana_balance, hana_balances, hana_unallocated, monthly_interest, repayment_fee, hana_excel
+from hana import HANA_PRINCIPAL, HANA_SHARES, hana_balance, hana_balances, hana_unallocated, monthly_interest, repayment_fee, hana_excel,estimate_fee_rate
 from easy_ui import choose_person, repeat_button
 from design_ui import MOTHER_COLOR, ME_COLOR, history_cards, main_navigation
 
@@ -12,7 +12,7 @@ def render_hana(records, today, mutate, gauge, amount_input):
     remaining=hana_balances(records)
     unallocated=hana_unallocated(records)
     st.subheader('하나은행 대출')
-    st.caption('엄마 2,000만 원 / 본인 5,000만 원 · 연 4.6% · 상환수수료율 0.49% · 실제 출금 계좌는 본인 계좌입니다.')
+    st.caption('엄마 2,000만 원 / 본인 5,000만 원 · 연 4.6% · 상환수수료율 0.59% · 실제 출금 계좌는 본인 계좌입니다.')
     with st.expander('하나은행 잔액 · 이자 자세히'):
         if unallocated:
             gauge('하나은행 전체',left,HANA_PRINCIPAL,'#009b8d')
@@ -41,7 +41,7 @@ def render_hana(records, today, mutate, gauge, amount_input):
         a.metric('상환 후 남은 원금',f'{after:,}원')
         b.metric('상환 후 예상 월 이자',f'약 {monthly_interest(after):,}원')
         a.metric('이번 상환으로 줄어드는 월 이자',f'약 {monthly_interest(principal):,}원')
-        b.metric('상환수수료 예상 · 0.49% 단순 계산',f'{repayment_fee(principal):,}원')
+        b.metric('상환수수료 예상 · 0.59% 단순 계산',f'{repayment_fee(principal):,}원')
         if show_split:
             for col,person,label,amount in zip(st.columns(2),['mother','me'],['엄마','본인'],[mother,me]):
                 with col:
@@ -49,7 +49,7 @@ def render_hana(records, today, mutate, gauge, amount_input):
                     st.write(f'남은 원금 **{before[person]-amount:,}원**')
                     st.write(f'예상 월 이자 **약 {monthly_interest(before[person]-amount):,}원**')
                     st.caption(f'이번 상환으로 월 이자 약 {monthly_interest(amount):,}원 감소 · 수수료 단순 예상 {repayment_fee(amount):,}원')
-        st.caption('수수료 예상은 상환 원금 × 0.49%입니다. 잔여기간에 따른 감면·면제는 반영하지 않습니다.')
+        st.caption('수수료 예상은 상환 원금 × 0.59%입니다. 잔여기간에 따른 감면·면제는 반영하지 않습니다.')
         return repayment_fee(principal)
 
     def form(prefix, initial=None):
@@ -77,6 +77,8 @@ def render_hana(records, today, mutate, gauge, amount_input):
                 else:
                     fee=estimate
                     st.caption('실제 수수료를 입력하지 않으면 위 금액을 ‘예상 수수료’로 구분해 기록합니다.')
+                    if initial and initial['fee_basis']=='estimate' and initial['fee']!=repayment_fee(initial['principal']):
+                        st.info(f'기존 예상 수수료 {initial["fee"]:,}원은 저장된 그대로 유지됩니다. 이 내역을 수정 저장하면 현재 0.59%로 다시 계산합니다. 실제 납부액이 있으면 실제 수수료로 입력하세요.')
                 a,b=st.columns(2) if person=='함께' else (st,st)
                 mother_interest=amount_input(a,'엄마 이자 · 실제 납부액',initial.get('mother_interest',0),10_000,prefix+'_mother_interest') if person!='본인만' else 0
                 me_interest=amount_input(b,'본인 이자 · 실제 납부액',initial.get('me_interest',0),10_000,prefix+'_me_interest') if person!='엄마만' else 0
@@ -89,7 +91,7 @@ def render_hana(records, today, mutate, gauge, amount_input):
             st.markdown(f'**저장 전 확인: 엄마 {mother:,}원 · 본인 {me:,}원 원금 상환**')
             st.caption('실제로 상환한 내역만 저장하세요. 앞으로 갚을 금액은 ‘상환 미리 계산’에서 확인할 수 있습니다.')
             if st.button('하나은행 상환 저장',type='primary',key=prefix+'_save'):
-                data=dict(id=initial.get('id',str(uuid.uuid4())),date=when.isoformat(),principal=int(principal),mother=int(mother),me=int(me),interest=int(interest),mother_interest=int(mother_interest),me_interest=int(me_interest),fee=int(fee),fee_basis='actual' if actual else 'estimate',memo=memo)
+                data=dict(id=initial.get('id',str(uuid.uuid4())),date=when.isoformat(),principal=int(principal),mother=int(mother),me=int(me),interest=int(interest),mother_interest=int(mother_interest),me_interest=int(me_interest),fee=int(fee),fee_basis='actual' if actual else 'estimate',fee_rate='0.59%',memo=memo)
                 if initial and 'mother' not in initial and (principal!=initial['principal'] or interest!=initial['interest']):
                     st.error('배분을 확인할 때는 이전 원금·납부 이자 합계를 유지해주세요.')
                 elif not initial and any(all(r.get(k)==data[k] for k in ('date','mother','me','mother_interest','me_interest','fee','fee_basis','memo')) for r in records):
@@ -113,6 +115,7 @@ def render_hana(records, today, mutate, gauge, amount_input):
             if month=='전체' or record['date'][:7]==month:
                 rows.append({'상환일':record['date'],'갚은 원금':record['principal'],'실제 납부 이자':record['interest'],'상환수수료':record['fee'],'수수료 구분':'실제' if record['fee_basis']=='actual' else '예상','상환 후 잔액':balance,'상환 후 예상 월 이자':monthly_interest(balance),'월 이자 감소액':monthly_interest(record['principal']),'메모':record['memo']})
                 rows[-1].update({'엄마 원금':record.get('mother','배분 확인 필요'),'본인 원금':record.get('me','배분 확인 필요'),'엄마 납부 이자':record.get('mother_interest','배분 확인 필요'),'본인 납부 이자':record.get('me_interest','배분 확인 필요')})
+                rows[-1]['예상 적용 수수료율']=estimate_fee_rate(record)
         if rows:
             selected=[r for r in records if month=='전체' or r['date'][:7]==month]
             history_cards(selected,'하나은행','hana_edit_select','open_hana_editor','hana_history',bank=True)
@@ -141,5 +144,5 @@ def render_hana(records, today, mutate, gauge, amount_input):
     with st.expander('이자와 상환수수료 계산 기준'):
         st.write('월 이자는 현재 금리가 계속 유지된다는 가정의 비교용 예상치입니다. 실제 납부한 이자는 입력한 금액만 기록합니다.')
         st.caption('원 단위 반올림으로 개인별 이자의 합계와 전체 예상 월 이자는 1원 차이가 날 수 있습니다.')
-        st.write('수수료는 요청하신 0.49%를 상환 원금에 곱한 단순 예상치입니다. 은행에서 확인한 금액을 입력하면 실제 수수료로 기록됩니다.')
+        st.write('수수료는 요청하신 0.59%를 상환 원금에 곱한 단순 예상치입니다. 은행에서 확인한 금액을 입력하면 실제 수수료로 기록됩니다.')
         st.markdown('[하나은행 공식 수수료 산식 안내](https://kebhana.com/cont/mall/mall08/mall0802/mall080204/1448202_115200.jsp): 상품에 따라 대출잔여일수 ÷ 대출기간이 추가 적용되므로 계약 조건과 실제 은행 안내 금액을 확인하세요.')

@@ -7,6 +7,7 @@ from copy import copy
 from openpyxl import load_workbook
 from core import excel
 from hana import hana_excel
+from girlfriend import gf_excel,fold_gf
 
 def validate_backup(data, today):
     if not isinstance(data,dict) or set(data)!={'date','revision'}:
@@ -28,7 +29,7 @@ def backup_state(events, today):
     for eid, timestamp, kind, raw in events:
         if eid in seen: continue
         seen.add(eid)
-        if kind in ('save','hana_save'):
+        if kind in ('save','hana_save','gf_save'):
             try:
                 when=datetime.fromisoformat(timestamp).astimezone(ZoneInfo('Asia/Seoul')).date()
             except ValueError:
@@ -44,8 +45,9 @@ def backup_state(events, today):
 
 def backup_excel(records, plan, hana_records, events, today, revision):
     wb=load_workbook(BytesIO(excel(records,plan,today)))
-    bank=load_workbook(BytesIO(hana_excel(hana_records)))
-    for source in bank:
+    gf_records=fold_gf(events)
+    extra_sheets=list(load_workbook(BytesIO(hana_excel(hana_records))))+list(load_workbook(BytesIO(gf_excel(gf_records))))
+    for source in extra_sheets:
         dest=wb.create_sheet(source.title)
         for row in source:
             for cell in row:
@@ -57,7 +59,7 @@ def backup_excel(records, plan, hana_records, events, today, revision):
         for name,dimension in source.column_dimensions.items():
             dest.column_dimensions[name].width=dimension.width
     meta=wb.create_sheet('백업 정보',0)
-    for row in [('항목','내용'),('백업 파일 생성일',today.isoformat()),('가족 유효 기록 수',len(records)),('하나은행 유효 기록 수',len(hana_records)),('원본 이벤트 수',len(events)),('파일 기준 정보',revision),('보관 안내','이 파일을 PC와 다른 저장 위치에 함께 보관하세요. 원본 이벤트 이력도 포함되어 있습니다.')]:
+    for row in [('항목','내용'),('백업 파일 생성일',today.isoformat()),('가족 유효 기록 수',len(records)),('하나은행 유효 기록 수',len(hana_records)),('원본 이벤트 수',len(events)),('파일 기준 정보',revision),('보관 안내','이 파일을 PC와 다른 저장 위치에 함께 보관하세요. 원본 이벤트 이력도 포함되어 있습니다.'),('여자친구 유효 기록 수',len(gf_records))]:
         meta.append(row)
     meta.column_dimensions['A'].width=25
     meta.column_dimensions['B'].width=80

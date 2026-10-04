@@ -7,6 +7,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 from core import fold, digest, validate, validate_plan
 from hana import fold_hana, validate_hana
+from girlfriend import fold_gf, validate_gf
 from backup import backup_state, validate_backup
 
 HEADER = ['event_id', 'timestamp', 'type', 'payload']
@@ -70,7 +71,7 @@ class GoogleStore:
         records, plan, hana_records, revision = self.load_details()
         return records, plan, revision
 
-    def load_details(self, include_backup=False):
+    def load_details(self, include_backup=False, include_girlfriend=False):
         rows = clean_rows(self.sheet.get_all_values())
         if not rows or rows[0] != HEADER:
             raise SheetFormatError('저장 탭의 제목 행을 확인해주세요.')
@@ -78,20 +79,22 @@ class GoogleStore:
         try:
             records, plan = fold(events)
             hana_records = fold_hana(events)
+            gf_records = fold_gf(events)
             today = datetime.now(ZoneInfo('Asia/Seoul')).date()
-            for record in records + hana_records:
+            for record in records + hana_records + gf_records:
                 if record['date'] > today.isoformat():
                     raise ValueError('미래 날짜의 실제 상환 내역이 있습니다.')
             state=backup_state(events,today)
         except (ValueError, KeyError, TypeError) as error:
             raise LedgerDataError('저장된 상환 내역 형식을 확인해주세요.') from error
         result=(records, plan, hana_records, digest(events))
+        if include_girlfriend: result=result+(gf_records,)
         return result+(state,) if include_backup else result
 
     def mutate(self, kind, data, expected, today):
         # 같은 앱 프로세스의 여러 브라우저에서 발생하는 동시 저장을 직렬화
         with self.lock:
-            records, plan, hana_records, revision = self.load_details()
+            records, plan, hana_records, revision, gf_records = self.load_details(include_girlfriend=True)
             if revision != expected:
                 raise ValueError('다른 화면에서 내역이 변경되었습니다. 새로고침 후 다시 저장해주세요.')
             if kind == 'save':
@@ -106,6 +109,11 @@ class GoogleStore:
             elif kind == 'hana_delete':
                 if data['id'] not in {r['id'] for r in hana_records}:
                     raise ValueError('이미 삭제된 하나은행 내역입니다.')
+            elif kind == 'gf_save':
+                validate_gf(data,gf_records,today)
+            elif kind == 'gf_delete':
+                if data['id'] not in {r['id'] for r in gf_records}:
+                    raise ValueError('이미 삭제된 여자친구 상환 내역입니다.')
             elif kind == 'backup_confirm':
                 validate_backup(data,today)
                 if data['revision'] != expected or data['date'] != today.isoformat():
@@ -116,24 +124,26 @@ class GoogleStore:
 
     def undo_save(self, kind, saved, previous, expected, today):
         with self.lock:
-            records, plan, hana_records, revision = self.load_details()
+            records, plan, hana_records, revision, gf_records = self.load_details(include_girlfriend=True)
             if revision != expected:
                 raise ValueError('내역이 변경되었습니다. 새로고침 후 취소해주세요.')
-            if kind not in ('save', 'hana_save'):
+            if kind not in ('save', 'hana_save','gf_save'):
                 raise ValueError('취소할 저장 유형을 확인해주세요.')
-            target = records if kind == 'save' else hana_records
+            target = records if kind == 'save' else hana_records if kind=='hana_save' else gf_records
             current = next((record for record in target if record['id'] == saved['id']), None)
             if current != saved:
                 raise ValueError('저장 이후 해당 내역이 수정 또는 삭제되어 바로 취소할 수 없습니다.')
             if previous is None:
-                self._append('delete' if kind == 'save' else 'hana_delete', {'id':saved['id']})
+                self._append({'save':'delete','hana_save':'hana_delete','gf_save':'gf_delete'}[kind], {'id':saved['id']})
             else:
                 if previous['id'] != saved['id']:
                     raise ValueError('취소할 내역의 식별 정보가 다릅니다.')
                 if kind == 'save':
                     validate(previous, records, today)
+                elif kind=='hana_save':
+                    validate_hana(previous, hana_records, today, allow_legacy=True,allow_historical=True)
                 else:
-                    validate_hana(previous, hana_records, today, allow_legacy=True)
+                    validate_gf(previous,gf_records,today)
                 self._append(kind, previous)
 
     def _append(self, kind, data):

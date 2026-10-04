@@ -10,11 +10,13 @@ import streamlit as st
 from core import PRINCIPAL, DEFAULT_PLAN, MAX_AMOUNT, amount_words, balances, month_paid, payoff, excel
 from storage import GoogleStore
 from hana_ui import render_hana
+from girlfriend_ui import render_girlfriend
+from girlfriend import GF_PRINCIPAL,gf_balance,gf_interest
 from hana import hana_balance, hana_balances, hana_unallocated, monthly_interest
 from easy_ui import choose_person, repeat_button, amount_buttons, last_record
 from backup import backup_excel
 from quotes_ui import render_header
-from design_ui import THEME, MOTHER_COLOR, ME_COLOR, person_card, main_navigation, request_tab, make_receipt, render_receipt, history_cards, monthly_goal, overview_hero
+from design_ui import THEME, MOTHER_COLOR, ME_COLOR, person_card, main_navigation, request_tab, make_receipt, render_receipt, history_cards, monthly_goal, overview_hero,loan_name
 
 st.set_page_config(page_title='우리집 상환장부', page_icon='◔', layout='wide')
 st.markdown(THEME,unsafe_allow_html=True)
@@ -84,10 +86,10 @@ def connect():
     return GoogleStore(st.secrets)
 
 render_header()
-st.caption('가족 상환장부 · 하나은행 대출을 탭별로 관리합니다.')
+st.caption('가족 · 하나은행 · 여자친구 대출을 탭별로 관리합니다.')
 try:
     store = connect()
-    records, plan, hana_records, revision, backup_status = store.load_details(include_backup=True)
+    records, plan, hana_records, revision, gf_records, backup_status = store.load_details(include_backup=True,include_girlfriend=True)
 except Exception as error:
     st.error('Google Sheets 연결에 실패했습니다. 아래 점검 결과를 확인해주세요.')
     error_type = type(error).__name__
@@ -162,8 +164,8 @@ def gauge(label, left, original, color):
 
 
 def mutate(kind, data, message='Google Sheets에 저장했습니다.'):
-    target=records if kind=='save' else hana_records
-    previous=next((r for r in target if r['id']==data.get('id')),None) if kind in ('save','hana_save') else None
+    target=records if kind=='save' else hana_records if kind=='hana_save' else gf_records
+    previous=next((r for r in target if r['id']==data.get('id')),None) if kind in ('save','hana_save','gf_save') else None
     try:
         store.mutate(kind, data, revision, today)
     except ValueError as e:
@@ -175,9 +177,9 @@ def mutate(kind, data, message='Google Sheets에 저장했습니다.'):
     st.session_state['notice'] = message
     if kind=='backup_confirm':
         st.session_state.pop('backup_downloaded',None)
-    if kind in ('save','hana_save'):
+    if kind in ('save','hana_save','gf_save'):
         st.session_state['last_save']={'kind':kind,'saved':dict(data),'previous':dict(previous) if previous else None}
-        st.session_state['payment_receipt']=make_receipt(kind,data,previous,records,hana_records)
+        st.session_state['payment_receipt']=make_receipt(kind,data,previous,records,hana_records,gf_records)
     st.rerun()
 
 def amount_input(container, label, value, step, key, maximum=MAX_AMOUNT, quick=False):
@@ -199,7 +201,7 @@ with st.expander('전체 장부 엑셀 백업',expanded=backup_status['overdue']
         st.caption(f'백업 완료 기록이 없습니다. 연간 백업 안내 예정일: {backup_status["due"]:%Y-%m-%d}')
     else:
         st.caption('상환 기록이 생기면 1년 뒤부터 백업을 안내합니다.')
-    st.write('가족·하나은행 장부와 원본 이력을 한 파일에 담습니다. 다운로드 후 파일을 열어 기록을 확인하고 PC와 다른 저장 위치에 함께 보관하세요.')
+    st.write('가족·하나은행·여자친구 장부와 원본 이력을 한 파일에 담습니다. 다운로드 후 파일을 열어 기록을 확인하고 PC와 다른 저장 위치에 함께 보관하세요.')
     if st.download_button('전체 장부 백업 엑셀 다운로드',backup_excel(records,plan,hana_records,backup_status['events'],today,revision),file_name=f'우리집_상환장부_전체백업_{today.isoformat()}.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',key='download_full_backup',on_click='rerun'):
         st.session_state['backup_downloaded']={'revision':revision,'date':today.isoformat()}
     if downloaded:=st.session_state.get('backup_downloaded'):
@@ -210,7 +212,7 @@ with st.expander('전체 장부 엑셀 백업',expanded=backup_status['overdue']
     st.caption('파일 다운로드만으로 백업 완료를 표시하지 않습니다. 실제 저장과 확인을 마친 뒤 완료 버튼을 누르세요.')
 
 if pending:=st.session_state.get('last_save'):
-    source='가족 대출' if pending['kind']=='save' else '하나은행'
+    source=loan_name(pending['kind'])
     amount=pending['saved'].get('total',pending['saved'].get('principal',0))
     st.caption(f'최근 저장: {source} · {pending["saved"]["date"]} · {amount:,}원')
     if st.button('방금 저장 취소',key='undo_last_save'):
@@ -225,12 +227,13 @@ if pending:=st.session_state.get('last_save'):
             st.session_state['notice']='방금 저장을 취소했습니다.'
             st.rerun()
 
-tabs=main_navigation(['전체 현황', '가족 대출', '가족 내역 · 엑셀', '가족 계획 · 선상환', '하나은행 대출'])
+tabs=main_navigation(['전체 현황', '가족 대출', '가족 내역 · 엑셀', '가족 계획 · 선상환', '하나은행 대출','여자친구 대출'])
 overview,entry,history,settings,hana_tab=(tabs[label] for label in ['전체 현황','가족 대출','가족 내역 · 엑셀','가족 계획 · 선상환','하나은행 대출'])
 with overview:
-    total_left=sum(remaining.values())+hana_balance(hana_records)
+    gf_left=gf_balance(gf_records)
+    total_left=sum(remaining.values())+hana_balance(hana_records)+gf_left
     monthly_due=sum(monthly_goal(remaining[p],paid[p],plan[p])['due'] for p in ('mother','me'))
-    overview_hero(total_left,270_000_000-total_left,monthly_due,today)
+    overview_hero(total_left,290_000_000-total_left,monthly_due,today)
     st.subheader('엄마와 본인, 한눈에')
     bank_remaining=hana_balances(hana_records)
     if not hana_unallocated(hana_records):
@@ -238,17 +241,18 @@ with overview:
         with a:
             person_card('mother','엄마',remaining['mother']+bank_remaining['mother'],120_000_000,remaining['mother'],bank_remaining['mother'],paid['mother'],plan['mother'],today)
         with b:
-            person_card('me','본인',remaining['me']+bank_remaining['me'],150_000_000,remaining['me'],bank_remaining['me'],paid['me'],plan['me'],today)
+            person_card('me','본인',remaining['me']+bank_remaining['me']+gf_left,170_000_000,remaining['me'],bank_remaining['me'],paid['me'],plan['me'],today,gf_left=gf_left)
     else:
         a,b,c=st.columns(3)
         a.metric('가족 대출 잔액',f'{sum(remaining.values()):,}원')
         b.metric('하나은행 잔액',f'{hana_balance(hana_records):,}원')
         c.metric('하나은행 예상 월 이자',f'약 {monthly_interest(hana_balance(hana_records)):,}원')
         st.info('이전 하나은행 내역의 배분을 확인하면 엄마·본인 총 잔액이 표시됩니다.')
-    st.caption(f'우리집 전체 잔액 {sum(remaining.values())+hana_balance(hana_records):,}원 · 하나은행 예상 월 이자 약 {monthly_interest(hana_balance(hana_records)):,}원')
+        st.metric('여자친구 대출 잔액',f'{gf_left:,}원')
+    st.caption(f'우리집 전체 잔액 {total_left:,}원 · 하나은행 예상 월 이자 약 {monthly_interest(hana_balance(hana_records)):,}원 · 여자친구 예상 월 이자 약 {gf_interest(gf_left):,}원')
     with st.container(border=True):
         st.subheader('오늘 갚은 돈을 기록하세요')
-        loan=st.radio('갚을 대출',['가족 대출','하나은행 대출'],horizontal=True,key='start_repayment_loan')
+        loan=st.radio('갚을 대출',['가족 대출','하나은행 대출','여자친구 대출'],horizontal=True,key='start_repayment_loan')
         st.button('상환 기록하기',type='primary',width='stretch',key='start_repayment',on_click=request_tab,args=(loan,))
         st.caption('대출 선택 → 엄마·본인 선택 → 금액 입력. 날짜는 오늘로 채워집니다.')
 with entry:
@@ -371,3 +375,6 @@ with settings:
 
 with hana_tab:
     render_hana(hana_records, today, mutate, gauge, amount_input)
+
+with tabs['여자친구 대출']:
+    render_girlfriend(gf_records,today,mutate,amount_input)

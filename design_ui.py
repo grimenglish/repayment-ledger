@@ -2,7 +2,8 @@ from html import escape
 import inspect
 import streamlit as st
 from core import amount_words
-from hana import monthly_interest, hana_balances, hana_unallocated
+from hana import monthly_interest, hana_balances, hana_unallocated,estimate_fee_rate
+from girlfriend import GF_PRINCIPAL,gf_balance,gf_interest
 
 MOTHER_COLOR='#0d9488'
 ME_COLOR='#2563eb'
@@ -53,7 +54,7 @@ def request_person(person,loan,today):
             st.session_state['new_manual_'+field]=0
         st.session_state['new_manual_memo']=''
         st.session_state['new_manual_compare']=False
-    else:
+    elif loan=='하나은행 대출':
         st.session_state['hana_new_person']='엄마만' if person=='mother' else '본인만'
         st.session_state['hana_new_date']=today
         for field in ('mother','me','mother_interest','me_interest'):
@@ -61,12 +62,18 @@ def request_person(person,loan,today):
         st.session_state['hana_new_actual']=False
         st.session_state['hana_new_memo']=''
         request_tab('하나은행 상환 입력','hana_navigation')
+    else:
+        st.session_state['gf_new_date']=today
+        st.session_state['gf_new_principal']=0
+        st.session_state['gf_new_interest']=0
+        st.session_state['gf_new_memo']=''
+        request_tab('여자친구 상환 입력','gf_navigation')
     request_tab(loan)
 
 def overview_hero(left,paid,due,today):
     st.markdown(f'<div class="overview-hero"><div class="hero-kicker">OUR FAMILY · {today:%Y.%m}</div><div class="hero-amount">남은 대출 {left:,}원</div><div class="hero-note">지금까지 {paid:,}원 상환<br>가족 대출 이번 달 남은 목표 <b>{due:,}원</b></div></div>',unsafe_allow_html=True)
 
-def person_card(person, label, left, original, family_left, bank_left,month_paid,plan,today):
+def person_card(person, label, left, original, family_left, bank_left,month_paid,plan,today,gf_left=None):
     color=MOTHER_COLOR if person=='mother' else ME_COLOR
     paid=original-left
     with st.container(border=True,key='overview_'+person):
@@ -83,9 +90,13 @@ def person_card(person, label, left, original, family_left, bank_left,month_paid
         a,b=st.columns(2)
         a.button('가족 상환 기록',key='card_'+person+'_family',type='primary',width='stretch',on_click=request_person,args=(person,'가족 대출',today),disabled=family_left==0)
         b.button('하나은행 상환 기록',key='card_'+person+'_hana',width='stretch',on_click=request_person,args=(person,'하나은행 대출',today),disabled=bank_left==0)
+        if gf_left is not None:
+            st.caption(f'여자친구 대출 예상 월 이자 약 {gf_interest(gf_left):,}원')
+            st.button('여자친구 상환 기록',key='card_me_gf',width='stretch',on_click=request_person,args=('me','여자친구 대출',today),disabled=gf_left==0)
         with st.expander('대출별 잔액 보기'):
             st.write(f'가족 대출 **{family_left:,}원**')
             st.write(f'하나은행 **{bank_left:,}원**')
+            if gf_left is not None: st.write(f'여자친구 **{gf_left:,}원**')
 
 def main_navigation(labels,key='main_navigation'):
     parameters=inspect.signature(st.tabs).parameters
@@ -102,11 +113,14 @@ def request_tab(label,key='main_navigation'):
     if 'key' in inspect.signature(st.tabs).parameters:
         st.session_state[key]=label
 
+def loan_name(kind):
+    return {'save':'가족 대출','hana_save':'하나은행','gf_save':'여자친구 대출'}[kind]
+
 def achievement_messages(receipt):
     if receipt['edited'] or not receipt['before_known'] or not receipt['split_ready']:
         return []
-    originals={'mother':100_000_000,'me':100_000_000} if receipt['kind']=='save' else {'mother':20_000_000,'me':50_000_000}
-    source='가족 대출' if receipt['kind']=='save' else '하나은행'
+    originals={'mother':100_000_000,'me':100_000_000} if receipt['kind']=='save' else {'mother':20_000_000,'me':50_000_000} if receipt['kind']=='hana_save' else {'mother':0,'me':GF_PRINCIPAL}
+    source=loan_name(receipt['kind'])
     messages=[]
     for person,label in [('mother','엄마'),('me','본인')]:
         before,after=receipt['before'][person],receipt['after'][person]
@@ -121,7 +135,7 @@ def achievement_messages(receipt):
             messages.append(f'{label} {source} 누적 {after_paid//10_000_000*1_000:,}만원 상환! 한 걸음 더 가까워졌어요.')
     return messages
 
-def make_receipt(kind, saved, previous, family_records, bank_records):
+def make_receipt(kind, saved, previous, family_records, bank_records,gf_records=None):
     if kind=='save':
         from core import balances
         before=balances(family_records)
@@ -129,29 +143,36 @@ def make_receipt(kind, saved, previous, family_records, bank_records):
         after=balances(others+[saved])
         split_ready=True
         before_known=True
-    else:
+    elif kind=='hana_save':
         before=hana_balances(bank_records)
         others=[r for r in bank_records if r['id']!=saved['id']]
         after=hana_balances(others+[saved])
         split_ready=not hana_unallocated(others+[saved])
         before_known=not hana_unallocated(bank_records)
+    else:
+        gf_records=gf_records or []
+        before={'mother':0,'me':gf_balance(gf_records)}
+        after={'mother':0,'me':gf_balance([r for r in gf_records if r['id']!=saved['id']]+[saved])}
+        split_ready=before_known=True
     return {'kind':kind,'saved':dict(saved),'edited':previous is not None,'before':before,'after':after,'split_ready':split_ready,'before_known':before_known}
 
 def render_receipt(receipt):
     record=receipt['saved']
-    source='가족 대출' if receipt['kind']=='save' else '하나은행'
+    source=loan_name(receipt['kind'])
     parts=[]
     for person,label in [('mother','엄마'),('me','본인')]:
-        if record.get(person,0): parts.append(f'{label} {record[person]:,}원')
+        amount=record['principal'] if receipt['kind']=='gf_save' and person=='me' else record.get(person,0)
+        if amount: parts.append(f'{label} {amount:,}원')
     heading='상환 내역 수정 완료' if receipt['edited'] else (' · '.join(parts)+' 상환 완료' if parts else '납부 비용 기록 완료')
     lines=[]
     if receipt['split_ready']:
         for person,label in [('mother','엄마'),('me','본인')]:
             if record.get(person,0) or receipt['before'][person]!=receipt['after'][person]:
                 line=f'{label} 남은 원금 <b>{receipt["before"][person]:,}원 → {receipt["after"][person]:,}원</b>' if receipt['before_known'] else f'{label} 남은 원금 <b>{receipt["after"][person]:,}원</b>'
-                if receipt['kind']=='hana_save':
-                    reduction=monthly_interest(receipt['before'][person])-monthly_interest(receipt['after'][person])
-                    line+=f'<br>예상 월 이자 약 {monthly_interest(receipt["after"][person]):,}원'
+                if receipt['kind'] in ('hana_save','gf_save'):
+                    interest_fn=gf_interest if receipt['kind']=='gf_save' else monthly_interest
+                    reduction=interest_fn(receipt['before'][person])-interest_fn(receipt['after'][person])
+                    line+=f'<br>예상 월 이자 약 {interest_fn(receipt["after"][person]):,}원'
                     if receipt['before_known']:
                         line+=' · '+(f'약 {reduction:,}원 감소' if reduction>=0 else f'약 {-reduction:,}원 증가')
                 lines.append('<p>'+line+'</p>')
@@ -186,6 +207,7 @@ def history_cards(records, source, editor_key, open_key, key_prefix, bank=False)
                 else:
                     st.write(f'상환 원금 **{record["principal"]:,}원** · 납부 이자 {record["interest"]:,}원')
                     st.write(f'수수료 {record["fee"]:,}원 · '+('실제' if record['fee_basis']=='actual' else '예상'))
+                    if record['fee_basis']=='estimate': st.caption('이 기록의 예상 수수료율: '+estimate_fee_rate(record))
                 if record['memo']: st.write(record['memo'])
                 def edit(identifier=record['id']):
                     st.session_state[editor_key]=identifier

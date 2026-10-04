@@ -64,7 +64,7 @@ def fold(events):
         elif kind == 'plan':
             validate_plan(data)
             plan = data
-        elif kind in ('hana_save', 'hana_delete'):
+        elif kind in ('hana_save', 'hana_delete','gf_save','gf_delete'):
             # 별도 대출의 이벤트는 가족 장부의 잔액과 계획에 반영하지 않는다.
             pass
         elif kind == 'backup_confirm':
